@@ -1,0 +1,7 @@
+target/
+*.dot
+*.pdf
+build
+.vscode
+log
+*.log

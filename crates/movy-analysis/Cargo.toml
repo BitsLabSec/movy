@@ -1,0 +1,17 @@
+[package]
+name = "movy-analysis"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+homepage.workspace = true
+repository.workspace = true
+
+[dependencies]
+petgraph = {workspace = true, features = ["serde-1"]}
+log = {workspace = true}
+itertools = {workspace = true}
+serde = {workspace = true}
+serde_json_any_key = {workspace = true}
+
+movy-types = {workspace = true}

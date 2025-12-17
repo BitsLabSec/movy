@@ -1,0 +1,48 @@
+[package]
+name = "movy-sui"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+homepage.workspace = true
+repository.workspace = true
+
+[dependencies]
+log = {workspace = true}
+move-trace-format ={workspace = true}
+color-eyre = {workspace = true}
+move-vm-runtime = {workspace = true, features = ["tracing"]}
+sui-execution.workspace = true
+prometheus.workspace = true
+itertools.workspace = true
+reqwest.workspace = true
+fastcrypto.workspace = true
+cynic = {workspace = true, features = ["http-reqwest"] }
+tokio = {workspace = true}
+serde.workspace = true
+bcs.workspace = true
+chrono.workspace = true
+serde_json.workspace = true
+rand.workspace = true
+mdbx-derive.workspace = true
+tempfile.workspace = true
+tokio-stream = {workspace = true}
+tonic = { workspace = true, features = ["zstd", "transport", "tls-webpki-roots"]}
+const-hex = {workspace = true}
+url = {workspace = true}
+auto_impl = {workspace = true}
+move-compiler = {workspace = true}
+move-binary-format = {workspace = true}
+move-package = {workspace = true}
+sui-move-build = {workspace = true}
+sui-package-management = { workspace = true }
+sui-types = {workspace = true}
+sui-rpc = {workspace = true}
+sui-sdk-types = {workspace = true}
+shared-crypto = {workspace = true}
+sui-sdk = {workspace = true}
+
+movy-types = {workspace = true}
+
+[build-dependencies]
+cynic-codegen = { version = "3" }
