@@ -382,6 +382,7 @@ where
             let input = _testcase.input_mut().as_mut().unwrap();
             let execution_outcome = outcome.exec;
             *input.outcome_mut() = Some(execution_outcome);
+            *input.display_mut() = Some(input.format());
         }
 
         #[cfg(feature = "input_display")]

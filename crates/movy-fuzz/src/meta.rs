@@ -310,29 +310,35 @@ fn apply_function_filters(
             let pkg = func.0.module_address;
             let module_id = &func.0;
             if let Some(set) = &include_pkgs
-                && !set.contains(&pkg) {
-                    return false;
-                }
+                && !set.contains(&pkg)
+            {
+                return false;
+            }
             if let Some(set) = &exclude_pkgs
-                && set.contains(&pkg) {
-                    return false;
-                }
+                && set.contains(&pkg)
+            {
+                return false;
+            }
             if let Some(set) = &include_funcs
-                && !set.contains(func) {
-                    return false;
-                }
+                && !set.contains(func)
+            {
+                return false;
+            }
             if let Some(set) = &exclude_funcs
-                && set.contains(func) {
-                    return false;
-                }
+                && set.contains(func)
+            {
+                return false;
+            }
             if let Some(set) = &include_modules
-                && !set.contains(module_id) {
-                    return false;
-                }
+                && !set.contains(module_id)
+            {
+                return false;
+            }
             if let Some(set) = &exclude_modules
-                && set.contains(module_id) {
-                    return false;
-                }
+                && set.contains(module_id)
+            {
+                return false;
+            }
             true
         })
         .collect()

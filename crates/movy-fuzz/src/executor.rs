@@ -160,6 +160,26 @@ where
                 .expect("no code ob installed");
             code_ob.reset_map()?;
         }
+        let extra = ExecutionExtraOutcome {
+            logs: trace_outcome.logs,
+            solver: trace_outcome.concolic,
+            stage_idx,
+            success,
+        };
+        let events: Vec<_> = events.into_iter().map(|e| e.into()).collect();
+
+        // Expose preliminary outcome so oracles can inspect events.
+        let mut exec = ExecutionOutcome {
+            events_verdict: trace_outcome.verdict,
+            events: events.clone(),
+            allowed_success: success,
+            findings: trace_outcome.findings.clone(),
+        };
+        state.extra_state_mut().global_outcome = Some(GlobalOutcome {
+            exec: exec.clone(),
+            extra: extra.clone(),
+        });
+
         let oracle_vulns = self.oracles.done_execution(&db, state, &effects)?;
         if !oracle_vulns.is_empty() {
             trace_outcome.findings.extend(oracle_vulns.iter().cloned());
@@ -171,15 +191,9 @@ where
         } else {
             trace_outcome.verdict
         };
-        let extra = ExecutionExtraOutcome {
-            logs: trace_outcome.logs,
-            solver: trace_outcome.concolic,
-            stage_idx,
-            success,
-        };
-        let exec = ExecutionOutcome {
+        exec = ExecutionOutcome {
             events_verdict: kind,
-            events: events.into_iter().map(|e| e.into()).collect(),
+            events,
             allowed_success: success,
             findings: trace_outcome.findings.clone(),
         };

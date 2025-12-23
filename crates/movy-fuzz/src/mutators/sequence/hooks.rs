@@ -104,66 +104,83 @@ fn append_hook_call<S>(
 
     let mut fixed_args: BTreeMap<u16, (SequenceArgument, MoveTypeTag)> = BTreeMap::new();
     let mut fixed_ty_args: BTreeMap<u16, MoveTypeTag> = BTreeMap::new();
-    if let Some(ctx) = ctx_arg
-        && let Some(param_ty) = hook_abi
-            .parameters.first()
+    let param_offset = if ctx_arg.is_some() { 1 } else { 0 };
+    if let Some(ctx) = ctx_arg {
+        if let Some(param_ty) = hook_abi
+            .parameters
+            .get(0)
             .and_then(|p| p.subst(&BTreeMap::new()))
         {
             fixed_args.insert(0, (ctx, param_ty));
         }
-    if let Some((target_call, target_abi, maybe_idx)) = target {
+    }
+    if let Some((target_call, target_abi, _maybe_idx)) = target {
+        // Hook must mirror the target function signature (plus optional context).
+        if hook_abi.type_parameters.len() != target_call.type_arguments.len() {
+            warn!(
+                "skip hook {:?} due to mismatched type parameters: hook {} vs target {}",
+                hook_ident,
+                hook_abi.type_parameters.len(),
+                target_call.type_arguments.len()
+            );
+            return;
+        }
+        for (i, ty) in target_call.type_arguments.iter().enumerate() {
+            fixed_ty_args.insert(i as u16, ty.clone());
+        }
+
+        if hook_abi.parameters.len() != param_offset + target_abi.parameters.len() {
+            warn!(
+                "skip hook {:?} due to mismatched params: hook {} vs target {} (+ctx {})",
+                hook_ident,
+                hook_abi.parameters.len(),
+                target_abi.parameters.len(),
+                param_offset
+            );
+            return;
+        }
+
         let ty_args_map = target_call
             .type_arguments
             .iter()
             .enumerate()
             .map(|(i, ty)| (i as u16, ty.clone()))
             .collect::<BTreeMap<_, _>>();
-        for (i, ty) in target_call.type_arguments.iter().enumerate() {
-            if i < hook_abi.type_parameters.len() {
-                fixed_ty_args.insert(i as u16, ty.clone());
-            }
-        }
-        let mut candidates: Vec<(MoveTypeTag, SequenceArgument)> = target_call
-            .arguments
-            .iter()
-            .zip(target_abi.parameters.iter())
-            .filter_map(|(arg, param)| param.subst(&ty_args_map).map(|ty| (ty, *arg)))
-            .collect();
-        if let Some(target_idx) = maybe_idx {
-            let ret_args = if target_abi.return_paramters.len() == 1 {
-                vec![SequenceArgument::Result(target_idx)]
-            } else {
-                target_abi
-                    .return_paramters
-                    .iter()
-                    .enumerate()
-                    .map(|(i, _)| SequenceArgument::NestedResult(target_idx, i as u16))
-                    .collect::<Vec<_>>()
-            };
-            candidates.extend(
-                ret_args
-                    .into_iter()
-                    .zip(target_abi.return_paramters.iter())
-                    .filter_map(|(arg, ret_ty)| ret_ty.subst(&ty_args_map).map(|ty| (ty, arg))),
-            );
-        }
-        let mut used = vec![false; candidates.len()];
         let hook_ty_args_map = fixed_ty_args.clone();
-        for (idx, param) in hook_abi.parameters.iter().enumerate() {
-            if ctx_arg.is_some() && idx == 0 {
-                continue;
-            }
-            let Some(param_ty) = param.subst(&hook_ty_args_map) else {
-                continue;
+        for (i, (hook_param, target_param)) in hook_abi
+            .parameters
+            .iter()
+            .skip(param_offset)
+            .zip(target_abi.parameters.iter())
+            .enumerate()
+        {
+            let Some(hook_ty) = hook_param.subst(&hook_ty_args_map) else {
+                warn!(
+                    "skip hook {:?} due to unsubstitutable hook param {}",
+                    hook_ident, i
+                );
+                return;
             };
-            if let Some((cand_idx, (_, arg))) = candidates
-                .iter()
-                .enumerate()
-                .find(|(i, (ty, _))| !used[*i] && *ty == param_ty)
-            {
-                fixed_args.insert(idx as u16, (*arg, param_ty.clone()));
-                used[cand_idx] = true;
+            let Some(target_ty) = target_param.subst(&ty_args_map) else {
+                warn!(
+                    "skip hook {:?} due to unsubstitutable target param {}",
+                    hook_ident, i
+                );
+                return;
+            };
+            if hook_ty != target_ty {
+                warn!(
+                    "skip hook {:?} due to param type mismatch at {}: hook {:?} vs target {:?}",
+                    hook_ident, i, hook_ty, target_ty
+                );
+                return;
             }
+            let arg = target_call
+                .arguments
+                .get(i)
+                .cloned()
+                .unwrap_or_else(|| SequenceArgument::Input(0));
+            fixed_args.insert((param_offset + i) as u16, (arg, hook_ty));
         }
     }
 
@@ -262,67 +279,68 @@ where
                     )
                     .cloned();
                 if let Some(target_abi) = target_abi
-                    && let Some(hooks) = function_hooks.get(&func_ident) {
-                        let mut hook_ctx: Option<SequenceArgument> = None;
-                        if let Some((create_ctx, _)) = context_idents.as_ref() {
-                            if let Some((_, rets)) = append_function(
-                                state,
-                                &mut ptb,
-                                create_ctx,
-                                BTreeMap::new(),
-                                BTreeMap::new(),
-                                &vec![],
-                                true,
-                                0,
-                            ) {
-                                hook_ctx = rets.first().cloned();
-                            } else {
-                                warn!(
-                                    "Failed to append context creation function {:?}",
-                                    create_ctx
-                                );
-                            }
-                        }
-                        for hook in hooks.pre_hooks.iter() {
-                            append_hook_call(
-                                state,
-                                &mut ptb,
-                                hook,
-                                Some((&remapped_call, &target_abi, None)),
-                                hook_ctx,
+                    && let Some(hooks) = function_hooks.get(&func_ident)
+                {
+                    let mut hook_ctx: Option<SequenceArgument> = None;
+                    if let Some((create_ctx, _)) = context_idents.as_ref() {
+                        if let Some((_, rets)) = append_function(
+                            state,
+                            &mut ptb,
+                            create_ctx,
+                            BTreeMap::new(),
+                            BTreeMap::new(),
+                            &vec![],
+                            true,
+                            0,
+                        ) {
+                            hook_ctx = rets.first().cloned();
+                        } else {
+                            warn!(
+                                "Failed to append context creation function {:?}",
+                                create_ctx
                             );
                         }
-                        let main_idx = ptb.commands.len() as u16;
-                        ptb.commands
-                            .push(MoveSequenceCall::Call(remapped_call.clone()));
-                        index_map.push(main_idx);
-                        for hook in hooks.post_hooks.iter() {
-                            append_hook_call(
-                                state,
-                                &mut ptb,
-                                hook,
-                                Some((&remapped_call, &target_abi, Some(main_idx))),
-                                hook_ctx,
-                            );
-                        }
-                        if let (Some(ctx_arg), Some((_, destroy_ctx)), Some(param_ty)) =
-                            (hook_ctx, context_idents.as_ref(), destroy_param_ty.clone())
-                        {
-                            let mut fixed_args = BTreeMap::new();
-                            fixed_args.insert(0u16, (ctx_arg, param_ty));
-                            let _ = append_function(
-                                state,
-                                &mut ptb,
-                                destroy_ctx,
-                                fixed_args,
-                                BTreeMap::new(),
-                                &vec![],
-                                true,
-                                0,
-                            );
-                        }
-                        continue;
                     }
+                    for hook in hooks.pre_hooks.iter() {
+                        append_hook_call(
+                            state,
+                            &mut ptb,
+                            hook,
+                            Some((&remapped_call, &target_abi, None)),
+                            hook_ctx,
+                        );
+                    }
+                    let main_idx = ptb.commands.len() as u16;
+                    ptb.commands
+                        .push(MoveSequenceCall::Call(remapped_call.clone()));
+                    index_map.push(main_idx);
+                    for hook in hooks.post_hooks.iter() {
+                        append_hook_call(
+                            state,
+                            &mut ptb,
+                            hook,
+                            Some((&remapped_call, &target_abi, Some(main_idx))),
+                            hook_ctx,
+                        );
+                    }
+                    if let (Some(ctx_arg), Some((_, destroy_ctx)), Some(param_ty)) =
+                        (hook_ctx, context_idents.as_ref(), destroy_param_ty.clone())
+                    {
+                        let mut fixed_args = BTreeMap::new();
+                        fixed_args.insert(0u16, (ctx_arg, param_ty));
+                        let _ = append_function(
+                            state,
+                            &mut ptb,
+                            destroy_ctx,
+                            fixed_args,
+                            BTreeMap::new(),
+                            &vec![],
+                            true,
+                            0,
+                        );
+                    }
+                    continue;
+                }
                 let new_idx = ptb.commands.len() as u16;
                 ptb.commands.push(MoveSequenceCall::Call(remapped_call));
                 index_map.push(new_idx);

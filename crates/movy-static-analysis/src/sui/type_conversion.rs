@@ -34,32 +34,32 @@ fn detect_unnecessary_type_conversion(function: &FunctionInfo) -> bool {
     for instr in function.code.iter() {
         match instr {
             SLBytecode::Call(_, _, Operation::CastU8, srcs, _) => {
-                if function.local_types[srcs[0] ] == Type::Primitive(PrimitiveType::U8) {
+                if function.local_types[srcs[0]] == Type::Primitive(PrimitiveType::U8) {
                     return true;
                 }
             }
             SLBytecode::Call(_, _, Operation::CastU16, srcs, _) => {
-                if function.local_types[srcs[0] ] == Type::Primitive(PrimitiveType::U16) {
+                if function.local_types[srcs[0]] == Type::Primitive(PrimitiveType::U16) {
                     return true;
                 }
             }
             SLBytecode::Call(_, _, Operation::CastU32, srcs, _) => {
-                if function.local_types[srcs[0] ] == Type::Primitive(PrimitiveType::U32) {
+                if function.local_types[srcs[0]] == Type::Primitive(PrimitiveType::U32) {
                     return true;
                 }
             }
             SLBytecode::Call(_, _, Operation::CastU64, srcs, _) => {
-                if function.local_types[srcs[0] ] == Type::Primitive(PrimitiveType::U64) {
+                if function.local_types[srcs[0]] == Type::Primitive(PrimitiveType::U64) {
                     return true;
                 }
             }
             SLBytecode::Call(_, _, Operation::CastU128, srcs, _) => {
-                if function.local_types[srcs[0] ] == Type::Primitive(PrimitiveType::U128) {
+                if function.local_types[srcs[0]] == Type::Primitive(PrimitiveType::U128) {
                     return true;
                 }
             }
             SLBytecode::Call(_, _, Operation::CastU256, srcs, _) => {
-                if function.local_types[srcs[0] ] == Type::Primitive(PrimitiveType::U256) {
+                if function.local_types[srcs[0]] == Type::Primitive(PrimitiveType::U256) {
                     return true;
                 }
             }

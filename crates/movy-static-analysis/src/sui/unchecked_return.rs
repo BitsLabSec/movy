@@ -42,10 +42,12 @@ fn detect_unchecked_return(function: &FunctionInfo) -> Vec<FunId> {
             let mut idx = offset + 1;
             while idx < function.code.len() && consumed < dsts.len() {
                 if let Bytecode::Call(_, _, Operation::Destroy, srcs, _) = &function.code[idx]
-                    && srcs.len() == 1 && dsts.contains(&srcs[0]) {
-                        consumed += 1;
-                        break;
-                    }
+                    && srcs.len() == 1
+                    && dsts.contains(&srcs[0])
+                {
+                    consumed += 1;
+                    break;
+                }
                 idx += 1;
             }
             if consumed > 0 {

@@ -57,7 +57,7 @@ public fun movy_post_ptb(
     let (ctr_id, new_val) = extract_counter(ctr);
     let state = context::borrow_state(movy);
     let previous_val = bag::borrow<ID, u64>(state, ctr_id);
-    if (*previous_val <= new_val) {
+    if (*previous_val > new_val) {
         crash_because(b"Counter should be always increasing".to_string());
     }
 }
