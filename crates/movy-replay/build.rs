@@ -30,6 +30,10 @@ fn build_std(dir: &Path, test: bool) -> Vec<SuiCompiledPackage> {
             let out =
                 SuiCompiledPackage::build_all_unpublished_from_folder(&package.package_path, test)
                     .unwrap();
+            let build_directory = package.package_path.join("build");
+            if build_directory.exists() {
+                std::fs::remove_dir_all(&build_directory).unwrap();
+            }
             deps.push(out);
         }
     }
