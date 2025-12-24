@@ -124,7 +124,7 @@ where
         executor: executor_inner,
         ob: tuple_list!(code_observer),
         attacker,
-        oracles: oracles(false),
+        oracles: oracles(true),
         disable_oracles: false,
         epoch: state.fuzz_state().epoch,
         epoch_ms: state.fuzz_state().epoch_ms,

@@ -38,7 +38,7 @@ impl<T, S> SuiGeneralOracle<T, S> for BoolJudgementOracle {
         event: &TraceEvent,
         _stack: Option<&Stack>,
         symbol_stack: &ConcolicState,
-        current_function: Option<movy_types::input::FunctionIdent>,
+        current_function: Option<&movy_types::input::FunctionIdent>,
         _state: &mut S,
     ) -> Result<Vec<OracleFinding>, MovyError> {
         match event {
@@ -46,7 +46,7 @@ impl<T, S> SuiGeneralOracle<T, S> for BoolJudgementOracle {
                 pc, instruction, ..
             } => {
                 let stack_syms = &symbol_stack.stack;
-                let current = current_function.as_ref().and_then(to_module_func);
+                let current = current_function.and_then(to_module_func);
                 let loss = match instruction {
                     Bytecode::Eq
                     | Bytecode::Neq

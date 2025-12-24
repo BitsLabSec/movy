@@ -1,4 +1,4 @@
-use std::{borrow::Cow, collections::BTreeMap, fmt::Display, marker::PhantomData};
+use std::{borrow::Cow, collections::BTreeMap, fmt::Display, marker::PhantomData, ops::AddAssign};
 
 use libafl::{
     HasMetadata,
@@ -126,7 +126,7 @@ where
         self.oracles.pre_execution(&db, state, input.sequence())?;
 
         trace!("Executing input: {}", input.sequence());
-
+        state.executions_mut().add_assign(1);
         let gas_id = state.fuzz_state().gas_id;
         let tracer = SuiFuzzTracer::new(&mut self.ob, state, &mut self.oracles, CODE_OBSERVER_NAME);
 

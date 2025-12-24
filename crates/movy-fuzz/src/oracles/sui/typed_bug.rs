@@ -34,7 +34,7 @@ where
         _event: &TraceEvent,
         _stack: Option<&Stack>,
         _symbol_stack: &ConcolicState,
-        _current_function: Option<movy_types::input::FunctionIdent>,
+        _current_function: Option<&movy_types::input::FunctionIdent>,
         _state: &mut S,
     ) -> Result<Vec<OracleFinding>, MovyError> {
         Ok(vec![])

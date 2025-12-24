@@ -22,7 +22,7 @@ pub trait SuiGeneralOracle<T, S> {
         event: &TraceEvent,
         stack: Option<&Stack>,
         symbol_stack: &ConcolicState,
-        current_function: Option<FunctionIdent>,
+        current_function: Option<&FunctionIdent>,
         state: &mut S,
     ) -> Result<Vec<OracleFinding>, MovyError>;
 
@@ -49,7 +49,7 @@ impl<T, S> SuiGeneralOracle<T, S> for () {
         _event: &TraceEvent,
         _stack: Option<&Stack>,
         _symbol_stack: &ConcolicState,
-        _current_function: Option<movy_types::input::FunctionIdent>,
+        _current_function: Option<&movy_types::input::FunctionIdent>,
         _state: &mut S,
     ) -> Result<Vec<OracleFinding>, MovyError> {
         Ok(vec![])
@@ -85,22 +85,19 @@ where
         event: &TraceEvent,
         stack: Option<&Stack>,
         symbol_stack: &ConcolicState,
-        current_function: Option<movy_types::input::FunctionIdent>,
+        current_function: Option<&movy_types::input::FunctionIdent>,
         state: &mut S,
     ) -> Result<Vec<OracleFinding>, MovyError> {
-        let mut findings = vec![];
-        findings.extend(self.0.event(
-            event,
-            stack,
-            symbol_stack,
-            current_function.clone(),
-            state,
-        )?);
-        findings.extend(
-            self.1
-                .event(event, stack, symbol_stack, current_function, state)?,
-        );
-        Ok(findings)
+        Ok(self
+            .0
+            .event(event, stack, symbol_stack, current_function.clone(), state)?
+            .into_iter()
+            .chain(
+                self.1
+                    .event(event, stack, symbol_stack, current_function, state)?
+                    .into_iter(),
+            )
+            .collect())
     }
 
     fn done_execution(
@@ -109,10 +106,12 @@ where
         state: &mut S,
         effects: &TransactionEffects,
     ) -> Result<Vec<OracleFinding>, MovyError> {
-        let mut findings = vec![];
-        findings.extend(self.0.done_execution(db, state, effects)?);
-        findings.extend(self.1.done_execution(db, state, effects)?);
-        Ok(findings)
+        Ok(self
+            .0
+            .done_execution(db, state, effects)?
+            .into_iter()
+            .chain(self.1.done_execution(db, state, effects)?.into_iter())
+            .collect())
     }
 }
 
@@ -148,7 +147,7 @@ where
         event: &TraceEvent,
         stack: Option<&Stack>,
         symbol_stack: &ConcolicState,
-        current_function: Option<FunctionIdent>,
+        current_function: Option<&FunctionIdent>,
         state: &mut S,
     ) -> Result<Vec<OracleFinding>, MovyError> {
         if self.disabled {

@@ -28,7 +28,7 @@ impl<T, S> SuiGeneralOracle<T, S> for TypeConversionOracle {
         event: &TraceEvent,
         stack: Option<&Stack>,
         _symbol_stack: &ConcolicState,
-        current_function: Option<movy_types::input::FunctionIdent>,
+        current_function: Option<&movy_types::input::FunctionIdent>,
         _state: &mut S,
     ) -> Result<Vec<OracleFinding>, MovyError> {
         match event {

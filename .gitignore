@@ -5,3 +5,4 @@ build
 .vscode
 log
 *.log
+flamegraph.svg

@@ -28,7 +28,23 @@ pub trait ObjectSuiStoreCommit {
 
 #[derive(Debug, Default, Clone, Serialize, Deserialize)]
 pub struct CachedSnapshot {
-    pub objects: BTreeMap<ObjectID, BTreeMap<u64, Object>>,
+    pub objects: BTreeMap<ObjectID, BTreeMap<u64, Option<Object>>>,
+}
+
+enum ResolvedResult {
+    Unbound,
+    KnownNotExisting,
+    Existing(Object),
+}
+
+impl ResolvedResult {
+    pub fn into_object(self) -> Option<Object> {
+        match self {
+            Self::Unbound => None,
+            Self::KnownNotExisting => None,
+            Self::Existing(obj) => Some(obj),
+        }
+    }
 }
 
 impl CachedSnapshot {
@@ -36,6 +52,7 @@ impl CachedSnapshot {
         self.objects
             .get(object)
             .and_then(|t| t.get(&version).cloned())
+            .flatten()
     }
 
     pub fn object_id_cached(&self, object: &ObjectID) -> Option<Object> {
@@ -43,18 +60,37 @@ impl CachedSnapshot {
     }
 
     pub fn object_resolved_upperbound(&self, object: &ObjectID, upbound: u64) -> Option<Object> {
+        self.object_resolve_upperbound_details(object, upbound)
+            .into_object()
+    }
+
+    fn object_resolve_upperbound_details(&self, object: &ObjectID, upbound: u64) -> ResolvedResult {
         self.objects
             .get(object)
-            .and_then(|vmap| vmap.range(0..=upbound).max_by_key(|v| v.0))
-            .map(|v| v.1.clone())
+            .map(|vmap| {
+                let resolved = vmap.range(0..=upbound).max_by_key(|v| v.0);
+                if let Some(resolved) = resolved {
+                    if let Some(object) = resolved.1.as_ref() {
+                        ResolvedResult::Existing(object.clone())
+                    } else {
+                        ResolvedResult::KnownNotExisting
+                    }
+                } else {
+                    ResolvedResult::Unbound
+                }
+            })
+            .unwrap_or(ResolvedResult::Unbound)
     }
 
     pub fn cache_object_only(&mut self, object: Object) {
-        let object_id = object.id();
+        // Shall we kept the old versions? Seems it does not violate any invariants
+        self.cache_query(object.id(), object.version().into(), Some(object));
+    }
+    pub fn cache_query(&mut self, object_id: ObjectID, version: u64, object: Option<Object>) {
         self.objects
             .entry(object_id)
             .or_default()
-            .insert(object.version().into(), object);
+            .insert(version, object);
     }
 }
 
@@ -221,29 +257,45 @@ impl<T: ChildObjectResolver> ChildObjectResolver for CachedStore<T> {
         let hit = {
             let guard = self.inner.borrow_mut();
 
-            guard.object_resolved_upperbound(child, child_version_upper_bound.into())
+            guard.object_resolve_upperbound_details(child, child_version_upper_bound.into())
         };
 
-        if let Some(hit) = hit {
-            if hit.version() == child_version_upper_bound {
+        match hit {
+            ResolvedResult::KnownNotExisting => {
                 debug!(
-                    "[CachedStore] read_child_object perfect hit for {}:{}, digest {}",
-                    child,
-                    child_version_upper_bound,
-                    hit.digest()
+                    "[CachedStore] read_child_object not existing for {}:{}",
+                    child, child_version_upper_bound,
                 );
+                return Ok(None);
+            }
+            ResolvedResult::Existing(hit) => {
+                if hit.version() == child_version_upper_bound {
+                    debug!(
+                        "[CachedStore] read_child_object perfect hit for {}:{}, digest {}",
+                        child,
+                        child_version_upper_bound,
+                        hit.digest()
+                    );
 
-                return Ok(Some(hit));
-            } else {
+                    return Ok(Some(hit));
+                } else {
+                    debug!(
+                        "[CachedStore] read_child_object hit version {} but not the ideal version for {}:{}, digest {}",
+                        hit.version(),
+                        child,
+                        child_version_upper_bound,
+                        hit.digest()
+                    );
+                }
+            }
+            _ => {
                 debug!(
-                    "[CachedStore] read_child_object hit version {} but not the ideal version for {}:{}, digest {}",
-                    hit.version(),
-                    child,
-                    child_version_upper_bound,
-                    hit.digest()
+                    "[CachedStore] read_child_object unbound miss for {}:{}",
+                    child, child_version_upper_bound,
                 );
             }
         }
+
         debug!(
             "[CachedStore] read_child_object miss for {}:{}",
             child, child_version_upper_bound,
@@ -255,6 +307,9 @@ impl<T: ChildObjectResolver> ChildObjectResolver for CachedStore<T> {
             self.inner.borrow_mut().cache_object_only(hit.clone());
             Ok(Some(hit))
         } else {
+            self.inner
+                .borrow_mut()
+                .cache_query(*child, child_version_upper_bound.into(), None);
             Ok(None)
         }
     }
@@ -293,7 +348,11 @@ impl<T> ObjectSuiStoreCommit for CachedStore<T> {
                 "[CachedStore] Removing deleted/transferred consensus objects {}:{}",
                 id, version
             );
-            guard.objects.entry(id).or_default().remove(&version.into());
+            guard
+                .objects
+                .entry(id)
+                .or_default()
+                .insert(version.into(), None);
         }
 
         let smeared_version = store.lamport_version;
@@ -316,7 +375,7 @@ impl<T> ObjectSuiStoreCommit for CachedStore<T> {
                 .objects
                 .entry(id)
                 .or_default()
-                .remove(&smeared_version.into());
+                .insert(smeared_version.into(), None);
         }
 
         // Optionally prune history objects?

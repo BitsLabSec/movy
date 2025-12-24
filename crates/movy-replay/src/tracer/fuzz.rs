@@ -164,14 +164,14 @@ where
             let rhs = stack
                 .value
                 .get(stack_len - 1)
-                .ok_or_eyre(eyre!("stack less than 2?!"))?
+                .ok_or_else(|| eyre!("stack less than 2?!"))?
                 .copy_value()?
                 .value_as::<IntegerValue>()?
                 .into();
             let lhs = stack
                 .value
                 .get(stack_len - 2)
-                .ok_or_eyre(eyre!("stack less than 2?!"))?
+                .ok_or_else(|| eyre!("stack less than 2?!"))?
                 .copy_value()?
                 .value_as::<IntegerValue>()?
                 .into();
@@ -190,7 +190,7 @@ where
             event,
             stack,
             &self.outcome.concolic,
-            self.current_functions.last().cloned(),
+            self.current_functions.last(),
             self.state,
         )?;
         if !oracle_vulns.is_empty() {

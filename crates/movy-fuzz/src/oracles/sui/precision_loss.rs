@@ -28,7 +28,7 @@ impl<T, S> SuiGeneralOracle<T, S> for PrecisionLossOracle {
         event: &TraceEvent,
         _stack: Option<&Stack>,
         symbol_stack: &ConcolicState,
-        current_function: Option<movy_types::input::FunctionIdent>,
+        current_function: Option<&movy_types::input::FunctionIdent>,
         _state: &mut S,
     ) -> Result<Vec<OracleFinding>, MovyError> {
         match event {

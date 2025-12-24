@@ -40,7 +40,7 @@ impl<T, S> SuiGeneralOracle<T, S> for InfiniteLoopOracle {
         event: &TraceEvent,
         _stack: Option<&Stack>,
         symbol_stack: &ConcolicState,
-        current_function: Option<movy_types::input::FunctionIdent>,
+        current_function: Option<&movy_types::input::FunctionIdent>,
         _state: &mut S,
     ) -> Result<Vec<OracleFinding>, MovyError> {
         match event {
@@ -54,7 +54,7 @@ impl<T, S> SuiGeneralOracle<T, S> for InfiniteLoopOracle {
             } => {
                 match instruction {
                     Bytecode::BrFalse(_) | Bytecode::BrTrue(_) => {
-                        let Some(func) = current_function.as_ref().and_then(to_module_func) else {
+                        let Some(func) = current_function.and_then(to_module_func) else {
                             return Ok(vec![]);
                         };
                         if symbol_stack.stack.is_empty() {

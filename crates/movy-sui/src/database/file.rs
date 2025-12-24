@@ -124,7 +124,7 @@ impl<T> MDBXCachedStore<T> {
                 .entry(key.id.into())
                 .or_default()
                 .entry(key.version)
-                .or_insert(value.object);
+                .or_insert(Some(value.object));
         }
         Ok(snap)
     }
@@ -137,7 +137,11 @@ impl<T> MDBXCachedStore<T> {
         let tx = self.env.begin_rw_txn().await?;
         for (_obj, obj_map) in snap.objects {
             for (_version, object) in obj_map {
-                self.may_cache_object_only(&tx, object).await?;
+                if let Some(object) = object {
+                    self.may_cache_object_only(&tx, object).await?;
+                } else {
+                    // TODO: !
+                }
             }
         }
         Ok(())

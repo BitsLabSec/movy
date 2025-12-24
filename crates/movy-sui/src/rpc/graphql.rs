@@ -747,7 +747,7 @@ impl GraphQlClientInner {
                 )?;
                 out.push(object);
             } else {
-                log::debug!("Got a none in tx resp, probably {:?}", keys.get(idx));
+                log::debug!("Got a none in objects resp, probably {:?}", keys.get(idx));
             }
         }
 
@@ -795,7 +795,7 @@ impl GraphQlClientInner {
                 };
                 out.push(data);
             } else {
-                log::debug!("Got a none in tx resp, probably {:?}", keys.get(idx));
+                log::debug!("Got a none in epoch resp, probably {:?}", keys.get(idx));
             }
         }
 

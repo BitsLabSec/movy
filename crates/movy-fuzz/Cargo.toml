@@ -42,4 +42,4 @@ move-vm-stack = {workspace = true}
 move-vm-types = {workspace = true}
 sui-types = {workspace = true}
 sui-json-rpc-types = {workspace = true}
-pprof = {workspace = true, optional = true}
+pprof = {workspace = true, optional = true, features = ["flamegraph"] }
