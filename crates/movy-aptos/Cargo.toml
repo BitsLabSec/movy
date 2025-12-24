@@ -8,3 +8,76 @@ homepage.workspace = true
 repository.workspace = true
 
 [dependencies]
+triomphe = "0.1.14"
+anyhow = {workspace = true}
+auto_impl = {workspace = true}
+sui-types = {workspace = true}
+log = {workspace = true}
+env_logger = "0.10"
+move-trace-format ={workspace = true}
+move-binary-format = {workspace = true}
+move-core-types = {workspace = true}
+move-vm-runtime = {workspace = true, features = ["tracing"]}
+move-vm-types = {workspace = true}
+color-eyre = {workspace = true}
+sui-execution.workspace = true
+prometheus.workspace = true
+ptree.workspace = true
+itertools.workspace = true
+reqwest.workspace = true
+fastcrypto.workspace = true
+cynic = {workspace = true, features = ["http-reqwest"] }
+tokio = {workspace = true}
+serde.workspace = true
+bcs.workspace = true
+chrono.workspace = true
+serde_json.workspace = true
+serde_json_any_key.workspace = true
+rand.workspace = true
+libafl = {workspace = true}
+libafl_bolts = {workspace = true}
+alloy-primitives = {workspace = true}
+const-hex = {workspace = true}
+move-vm-stack = { workspace = true }
+mdbx-derive = {workspace = true}
+z3 = {workspace = true}
+tokio-stream = {workspace = true}
+tempfile = {workspace = true}
+
+movy-analysis = {workspace = true}
+movy-types = {workspace = true}
+movy-sui = {workspace = true}
+
+aptos-config = { workspace = true }
+aptos-crypto = { workspace = true}
+aptos-db = { workspace = true }
+aptos-executor = { workspace = true }
+aptos-storage-interface = { workspace = true }
+aptos-types = { workspace = true }
+aptos-vm = { workspace = true }
+aptos-vm-genesis = { workspace = true }
+aptos-vm-environment = { workspace = true }
+aptos-vm-logging = { workspace = true }
+aptos-vm-types = { workspace = true }
+aptos-aggregator = { workspace = true }
+aptos-move-table-extension = { workspace = true }
+aptos-move-core-types = { workspace = true }
+aptos-move-binary-format = { workspace = true }
+aptos-move-vm-types = { workspace = true }
+aptos-move-vm-runtime = { workspace = true }
+aptos-native-interface = { workspace = true }
+aptos-gas-schedule = { workspace = true }
+aptos-cached-packages = { workspace = true }
+aptos-dynamic-transaction-composer = { workspace = true }
+aptos-keygen = { workspace = true }
+bytes = { workspace = true }
+
+serde_yaml = "0.9"
+dashmap = { workspace = true }
+
+
+[build-dependencies]
+tempfile.workspace = true
+serde_json.workspace = true
+movy-sui = {workspace = true}
+movy-types = {workspace = true}
