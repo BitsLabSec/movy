@@ -9,7 +9,7 @@ use movy_types::{
 };
 
 use crate::{
-    meta::{FuzzMetadata, HasFuzzMetadata},
+    meta::{FunctionHook, FuzzMetadata, HasFuzzMetadata},
     mutators::sequence::{
         append::append_function,
         post::{
@@ -97,7 +97,7 @@ fn append_hook_call<S>(
     ) {
         Some(f) => f.clone(),
         None => {
-            warn!("Unknown hook function {:?}", hook_ident);
+            warn!("Unknown hook function {}", hook_ident);
             return;
         }
     };
@@ -118,7 +118,7 @@ fn append_hook_call<S>(
         // Hook must mirror the target function signature (plus optional context).
         if hook_abi.type_parameters.len() != target_call.type_arguments.len() {
             warn!(
-                "skip hook {:?} due to mismatched type parameters: hook {} vs target {}",
+                "skip hook {} due to mismatched type parameters: hook {} vs target {}",
                 hook_ident,
                 hook_abi.type_parameters.len(),
                 target_call.type_arguments.len()
@@ -131,7 +131,7 @@ fn append_hook_call<S>(
 
         if hook_abi.parameters.len() != param_offset + target_abi.parameters.len() {
             warn!(
-                "skip hook {:?} due to mismatched params: hook {} vs target {} (+ctx {})",
+                "skip hook {} due to mismatched params: hook {} vs target {} (+ctx {})",
                 hook_ident,
                 hook_abi.parameters.len(),
                 target_abi.parameters.len(),
@@ -156,21 +156,21 @@ fn append_hook_call<S>(
         {
             let Some(hook_ty) = hook_param.subst(&hook_ty_args_map) else {
                 warn!(
-                    "skip hook {:?} due to unsubstitutable hook param {}",
+                    "skip hook {} due to unsubstitutable hook param {}",
                     hook_ident, i
                 );
                 return;
             };
             let Some(target_ty) = target_param.subst(&ty_args_map) else {
                 warn!(
-                    "skip hook {:?} due to unsubstitutable target param {}",
+                    "skip hook {} due to unsubstitutable target param {}",
                     hook_ident, i
                 );
                 return;
             };
             if hook_ty != target_ty {
                 warn!(
-                    "skip hook {:?} due to param type mismatch at {}: hook {:?} vs target {:?}",
+                    "skip hook {} due to param type mismatch at {}: hook {} vs target {}",
                     hook_ident, i, hook_ty, target_ty
                 );
                 return;
@@ -197,18 +197,18 @@ fn append_hook_call<S>(
     )
     .is_none()
     {
-        warn!("skip hook {:?} due to arg construction failure", hook_ident);
+        warn!("skip hook {} due to arg construction failure", hook_ident);
     }
 }
 
-pub fn apply_hooks<S>(state: &mut S, base: &MoveSequence) -> MoveSequence
+fn resolve_destroy_param_ty<S>(
+    state: &S,
+    context_idents: &Option<(FunctionIdent, FunctionIdent)>,
+) -> Option<MoveTypeTag>
 where
-    S: HasRand + HasFuzzMetadata + HasFuzzEnv,
+    S: HasFuzzMetadata,
 {
-    let function_hooks = state.fuzz_state().function_hooks.clone();
-    let sequence_hooks = state.fuzz_state().sequence_hooks.clone();
-    let context_idents = context_idents(state.fuzz_state());
-    let destroy_param_ty = context_idents.as_ref().and_then(|(_, destroy_ctx)| {
+    context_idents.as_ref().and_then(|(_, destroy_ctx)| {
         state
             .fuzz_state()
             .get_function(
@@ -221,7 +221,272 @@ where
                     .first()
                     .and_then(|p| p.subst(&BTreeMap::new()))
             })
-    });
+    })
+}
+
+fn append_context_creation<S>(
+    state: &mut S,
+    ptb: &mut MoveSequence,
+    context_idents: &Option<(FunctionIdent, FunctionIdent)>,
+    scope: &str,
+) -> Option<SequenceArgument>
+where
+    S: HasRand + HasFuzzMetadata + HasFuzzEnv,
+{
+    let Some((create_ctx, _)) = context_idents.as_ref() else {
+        debug!("[{scope}] No context creation function available");
+        return None;
+    };
+
+    debug!("[{scope}] Appending context creation hook: {}", create_ctx);
+    if let Some((_, rets)) = append_function(
+        state,
+        ptb,
+        create_ctx,
+        BTreeMap::new(),
+        BTreeMap::new(),
+        &vec![],
+        true,
+        0,
+    ) {
+        let ctx = rets.first().cloned();
+        debug!("[{scope}] Context created with return value: {:?}", ctx);
+        ctx
+    } else {
+        warn!(
+            "[{scope}] Failed to append context creation function {}",
+            create_ctx
+        );
+        None
+    }
+}
+
+fn append_context_destruction<S>(
+    state: &mut S,
+    ptb: &mut MoveSequence,
+    context_idents: &Option<(FunctionIdent, FunctionIdent)>,
+    destroy_param_ty: &Option<MoveTypeTag>,
+    ctx_arg: Option<SequenceArgument>,
+    scope: &str,
+) where
+    S: HasRand + HasFuzzMetadata + HasFuzzEnv,
+{
+    let (Some(ctx_arg), Some((_, destroy_ctx)), Some(param_ty)) =
+        (ctx_arg, context_idents.as_ref(), destroy_param_ty)
+    else {
+        if ctx_arg.is_none() {
+            debug!("[{scope}] No context argument to destroy");
+        } else {
+            warn!("[{scope}] Unknown destroy context function or param type");
+        }
+        return;
+    };
+
+    debug!(
+        "[{scope}] Appending context destruction hook: {} with arg {}",
+        destroy_ctx, ctx_arg
+    );
+    let mut fixed_args = BTreeMap::new();
+    fixed_args.insert(0u16, (ctx_arg, param_ty.clone()));
+    let _ = append_function(
+        state,
+        ptb,
+        destroy_ctx,
+        fixed_args,
+        BTreeMap::new(),
+        &vec![],
+        true,
+        0,
+    );
+}
+
+fn append_sequence_hooks_with_ctx<S>(
+    state: &mut S,
+    hooks: &[FunctionIdent],
+    ptb: &mut MoveSequence,
+    ctx: Option<SequenceArgument>,
+    phase: &str,
+) where
+    S: HasRand + HasFuzzMetadata + HasFuzzEnv,
+{
+    for hook in hooks.iter() {
+        debug!("[{phase}] Appending sequence hook {}", hook);
+        append_hook_call(state, ptb, hook, None, ctx);
+    }
+}
+
+fn append_call_without_hooks(
+    ptb: &mut MoveSequence,
+    index_map: &mut Vec<u16>,
+    remapped_call: MoveCall,
+    original_idx: usize,
+) {
+    let new_idx = ptb.commands.len() as u16;
+    debug!("[cmd {original_idx}] No hooks found, appending call at new idx {new_idx}");
+    ptb.commands.push(MoveSequenceCall::Call(remapped_call));
+    index_map.push(new_idx);
+}
+
+fn append_non_call_command(
+    ptb: &mut MoveSequence,
+    index_map: &mut Vec<u16>,
+    cmd: &MoveSequenceCall,
+    original_idx: usize,
+) {
+    let new_idx = ptb.commands.len() as u16;
+    debug!("[cmd {original_idx}] Appending non-call command at new idx {new_idx}");
+    ptb.commands.push(remap_command(cmd, index_map));
+    index_map.push(new_idx);
+}
+
+fn handle_function_call_hooks<S>(
+    state: &mut S,
+    movecall: &MoveCall,
+    remapped_call: MoveCall,
+    ptb: &mut MoveSequence,
+    index_map: &mut Vec<u16>,
+    function_hooks: &BTreeMap<FunctionIdent, FunctionHook>,
+    context_idents: &Option<(FunctionIdent, FunctionIdent)>,
+    destroy_param_ty: &Option<MoveTypeTag>,
+    original_idx: usize,
+) -> bool
+where
+    S: HasRand + HasFuzzMetadata + HasFuzzEnv,
+{
+    let func_ident = FunctionIdent::new(
+        &movecall.module_id,
+        &movecall.module_name,
+        &movecall.function,
+    );
+    let target_abi = state
+        .fuzz_state()
+        .get_function(
+            &movecall.module_id,
+            &movecall.module_name,
+            &movecall.function,
+        )
+        .cloned();
+
+    let Some(target_abi) = target_abi else {
+        debug!(
+            "[cmd {original_idx}] Target ABI not found for {}",
+            func_ident
+        );
+        return false;
+    };
+    let Some(hooks) = function_hooks.get(&func_ident) else {
+        debug!(
+            "[cmd {original_idx}] No function-level hooks for {}",
+            func_ident
+        );
+        return false;
+    };
+
+    debug!(
+        "[cmd {original_idx}] Applying hooks for target {}: pre [{}], post [{}]",
+        func_ident,
+        hooks
+            .pre_hooks
+            .iter()
+            .map(|h| h.to_string())
+            .collect::<Vec<_>>()
+            .join(", "),
+        hooks
+            .post_hooks
+            .iter()
+            .map(|h| h.to_string())
+            .collect::<Vec<_>>()
+            .join(", ")
+    );
+
+    let hook_ctx = append_context_creation(state, ptb, context_idents, "function");
+
+    for hook in hooks.pre_hooks.iter() {
+        debug!("[cmd {original_idx}] Appending pre-hook {}", hook);
+        append_hook_call(
+            state,
+            ptb,
+            hook,
+            Some((&remapped_call, &target_abi, None)),
+            hook_ctx,
+        );
+    }
+
+    let main_idx = ptb.commands.len() as u16;
+    debug!("[cmd {original_idx}] Appending main call {func_ident} at new idx {main_idx}");
+    ptb.commands
+        .push(MoveSequenceCall::Call(remapped_call.clone()));
+    index_map.push(main_idx);
+
+    for hook in hooks.post_hooks.iter() {
+        debug!("[cmd {original_idx}] Appending post-hook {}", hook);
+        append_hook_call(
+            state,
+            ptb,
+            hook,
+            Some((&remapped_call, &target_abi, Some(main_idx))),
+            hook_ctx,
+        );
+    }
+
+    append_context_destruction(
+        state,
+        ptb,
+        context_idents,
+        destroy_param_ty,
+        hook_ctx,
+        "function",
+    );
+
+    true
+}
+
+pub fn apply_hooks<S>(state: &mut S, base: &MoveSequence) -> MoveSequence
+where
+    S: HasRand + HasFuzzMetadata + HasFuzzEnv,
+{
+    debug!("Applying hooks to sequence {}", base,);
+    let function_hooks = state.fuzz_state().function_hooks.clone();
+    let sequence_hooks = state.fuzz_state().sequence_hooks.clone();
+    debug!(
+        "Detected movy test sequence hooks: pre [{}], post [{}]",
+        sequence_hooks
+            .pre_hooks
+            .iter()
+            .map(|h| h.to_string())
+            .collect::<Vec<_>>()
+            .join(", "),
+        sequence_hooks
+            .post_hooks
+            .iter()
+            .map(|h| h.to_string())
+            .collect::<Vec<_>>()
+            .join(", ")
+    );
+    if function_hooks.is_empty() {
+        debug!("No movy test function-level hooks detected");
+    } else {
+        for (target, hooks) in function_hooks.iter() {
+            debug!(
+                "Detected movy test hooks for target {}: pre [{}], post [{}]",
+                target,
+                hooks
+                    .pre_hooks
+                    .iter()
+                    .map(|h| h.to_string())
+                    .collect::<Vec<_>>()
+                    .join(", "),
+                hooks
+                    .post_hooks
+                    .iter()
+                    .map(|h| h.to_string())
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            );
+        }
+    }
+    let context_idents = context_idents(state.fuzz_state());
+    let destroy_param_ty = resolve_destroy_param_ty(state, &context_idents);
 
     let mut ptb = MoveSequence {
         inputs: base.inputs.clone(),
@@ -229,152 +494,61 @@ where
     };
     let mut index_map: Vec<u16> = Vec::with_capacity(base.commands.len());
 
-    // Global context still created at start/end.
-    let mut global_ctx: Option<SequenceArgument> = None;
-    if let Some((create_ctx, _)) = context_idents.as_ref() {
-        if let Some((_, rets)) = append_function(
-            state,
-            &mut ptb,
-            create_ctx,
-            BTreeMap::new(),
-            BTreeMap::new(),
-            &vec![],
-            true,
-            0,
-        ) {
-            global_ctx = rets.first().cloned();
-        } else {
-            warn!(
-                "Failed to append context creation function {:?}",
-                create_ctx
-            );
-        }
-    } else {
-        debug!("No context functions found in metadata");
-    }
+    let global_ctx: Option<SequenceArgument> =
+        append_context_creation(state, &mut ptb, &context_idents, "global");
 
-    // Sequence-level pre hooks use the global context if available.
-    for hook in sequence_hooks.pre_hooks.iter() {
-        append_hook_call(state, &mut ptb, hook, None, global_ctx);
-    }
+    append_sequence_hooks_with_ctx(
+        state,
+        &sequence_hooks.pre_hooks,
+        &mut ptb,
+        global_ctx,
+        "seq-pre",
+    );
 
-    for cmd in base.commands.iter() {
+    for (original_idx, cmd) in base.commands.iter().enumerate() {
         match cmd {
             MoveSequenceCall::Call(movecall) => {
                 let remapped_call = match remap_command(cmd, &index_map) {
                     MoveSequenceCall::Call(mc) => mc,
                     _ => unreachable!("expected MoveCall"),
                 };
-                let func_ident = FunctionIdent::new(
-                    &movecall.module_id,
-                    &movecall.module_name,
-                    &movecall.function,
-                );
-                let target_abi = state
-                    .fuzz_state()
-                    .get_function(
-                        &movecall.module_id,
-                        &movecall.module_name,
-                        &movecall.function,
-                    )
-                    .cloned();
-                if let Some(target_abi) = target_abi
-                    && let Some(hooks) = function_hooks.get(&func_ident)
-                {
-                    let mut hook_ctx: Option<SequenceArgument> = None;
-                    if let Some((create_ctx, _)) = context_idents.as_ref() {
-                        if let Some((_, rets)) = append_function(
-                            state,
-                            &mut ptb,
-                            create_ctx,
-                            BTreeMap::new(),
-                            BTreeMap::new(),
-                            &vec![],
-                            true,
-                            0,
-                        ) {
-                            hook_ctx = rets.first().cloned();
-                        } else {
-                            warn!(
-                                "Failed to append context creation function {:?}",
-                                create_ctx
-                            );
-                        }
-                    }
-                    for hook in hooks.pre_hooks.iter() {
-                        append_hook_call(
-                            state,
-                            &mut ptb,
-                            hook,
-                            Some((&remapped_call, &target_abi, None)),
-                            hook_ctx,
-                        );
-                    }
-                    let main_idx = ptb.commands.len() as u16;
-                    ptb.commands
-                        .push(MoveSequenceCall::Call(remapped_call.clone()));
-                    index_map.push(main_idx);
-                    for hook in hooks.post_hooks.iter() {
-                        append_hook_call(
-                            state,
-                            &mut ptb,
-                            hook,
-                            Some((&remapped_call, &target_abi, Some(main_idx))),
-                            hook_ctx,
-                        );
-                    }
-                    if let (Some(ctx_arg), Some((_, destroy_ctx)), Some(param_ty)) =
-                        (hook_ctx, context_idents.as_ref(), destroy_param_ty.clone())
-                    {
-                        let mut fixed_args = BTreeMap::new();
-                        fixed_args.insert(0u16, (ctx_arg, param_ty));
-                        let _ = append_function(
-                            state,
-                            &mut ptb,
-                            destroy_ctx,
-                            fixed_args,
-                            BTreeMap::new(),
-                            &vec![],
-                            true,
-                            0,
-                        );
-                    }
+                if handle_function_call_hooks(
+                    state,
+                    movecall,
+                    remapped_call.clone(),
+                    &mut ptb,
+                    &mut index_map,
+                    &function_hooks,
+                    &context_idents,
+                    &destroy_param_ty,
+                    original_idx,
+                ) {
                     continue;
                 }
-                let new_idx = ptb.commands.len() as u16;
-                ptb.commands.push(MoveSequenceCall::Call(remapped_call));
-                index_map.push(new_idx);
+                append_call_without_hooks(&mut ptb, &mut index_map, remapped_call, original_idx);
             }
             _ => {
-                let new_idx = ptb.commands.len() as u16;
-                ptb.commands.push(remap_command(cmd, &index_map));
-                index_map.push(new_idx);
+                append_non_call_command(&mut ptb, &mut index_map, cmd, original_idx);
             }
         }
     }
 
-    for hook in sequence_hooks.post_hooks.iter() {
-        append_hook_call(state, &mut ptb, hook, None, global_ctx);
-    }
+    append_sequence_hooks_with_ctx(
+        state,
+        &sequence_hooks.post_hooks,
+        &mut ptb,
+        global_ctx,
+        "seq-post",
+    );
 
-    if let Some((_, destroy_ctx)) = context_idents.as_ref() {
-        if let (Some(ctx_arg), Some(param_ty)) = (global_ctx, destroy_param_ty.clone()) {
-            let mut fixed_args = BTreeMap::new();
-            fixed_args.insert(0u16, (ctx_arg, param_ty));
-            let _ = append_function(
-                state,
-                &mut ptb,
-                destroy_ctx,
-                fixed_args,
-                BTreeMap::new(),
-                &vec![],
-                true,
-                0,
-            );
-        } else {
-            warn!("Unknown destroy context function {:?}", destroy_ctx);
-        }
-    }
+    append_context_destruction(
+        state,
+        &mut ptb,
+        &context_idents,
+        &destroy_param_ty,
+        global_ctx,
+        "global",
+    );
 
     process_balance(&mut ptb, state);
     process_key_store(&mut ptb, state);
