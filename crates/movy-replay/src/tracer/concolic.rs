@@ -1,6 +1,6 @@
 use std::{cmp::Ordering, collections::BTreeMap, str::FromStr};
 
-use log::{trace, warn};
+use log::{debug, trace, warn};
 use move_binary_format::file_format::Bytecode;
 use move_core_types::{language_storage::TypeTag, u256::U256};
 use move_trace_format::format::{Effect, ExtraInstructionInformation, TraceEvent, TypeTagWithRefs};
@@ -315,14 +315,14 @@ impl ConcolicState {
             {
                 self.stack.pop();
             }
-            assert_eq!(
-                self.stack.len(),
-                s.value.len(),
-                "stack: {:?}, stack from trace: {:?}, event: {:?}",
-                self.stack,
-                s.value,
-                event
-            );
+            if self.stack.len() != s.value.len() {
+                debug!(
+                    "stack: {:?}, stack from trace: {:?}, event: {:?}, disabling concolic execution",
+                    self.stack, s.value, event
+                );
+                self.disable = true;
+                return None;
+            }
         } else {
             trace!("No stack available for event: {:?}", event);
         }
