@@ -209,7 +209,10 @@ where
                     }
                     let arg_type = struct_params.remove(0).partial_subst(&ty_args);
 
-                    let funcs = state.fuzz_state().type_graph.find_producers(&arg_type);
+                    let funcs = state
+                        .fuzz_state()
+                        .type_graph
+                        .find_producers(&arg_type, true);
                     // except itself
                     let funcs = funcs
                         .iter()

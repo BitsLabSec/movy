@@ -902,7 +902,7 @@ where
             .flat_map(|type_tag| {
                 meta_state
                     .type_graph
-                    .find_consumers(&MoveAbiSignatureToken::from_type_tag_lossy(type_tag))
+                    .find_consumers(&MoveAbiSignatureToken::from_type_tag_lossy(type_tag), true)
                     .iter()
                     .map(|(module_id, consumer_function)| {
                         FunctionIdent::new(

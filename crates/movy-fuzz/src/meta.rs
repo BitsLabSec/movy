@@ -216,7 +216,7 @@ fn should_skip_function(base: &Metadata, func_data: &MoveFunctionAbi) -> bool {
             MoveAbiSignatureToken::Reference(_) | MoveAbiSignatureToken::MutableReference(_)
         );
         let hanging_hot_potato =
-            ret_ty.is_hot_potato() && base.type_graph.find_consumers(ret_ty).is_empty();
+            ret_ty.is_hot_potato() && base.type_graph.find_consumers(ret_ty, true).is_empty();
         if self_used || ret_ref || hanging_hot_potato {
             return true;
         }
