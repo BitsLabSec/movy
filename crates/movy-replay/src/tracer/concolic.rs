@@ -316,7 +316,7 @@ impl ConcolicState {
                 self.stack.pop();
             }
             if self.stack.len() != s.value.len() {
-                debug!(
+                warn!(
                     "stack: {:?}, stack from trace: {:?}, event: {:?}, disabling concolic execution",
                     self.stack, s.value, event
                 );
@@ -423,6 +423,13 @@ impl ConcolicState {
                 instruction,
                 extra,
             } => {
+                trace!(
+                    "Before instruction at pc {}: {:?}, extra: {:?}. Current stack: {:?}",
+                    pc,
+                    instruction,
+                    extra,
+                    stack.map(|s| &s.value)
+                );
                 match instruction {
                     Bytecode::Pop
                     | Bytecode::BrTrue(_)
@@ -1003,11 +1010,14 @@ impl ConcolicState {
                             _ => unreachable!(),
                         }
                     }
+                    Bytecode::VariantSwitch(_) => {
+                        self.stack.pop();
+                    }
                     _ => {}
                 }
             }
             _ => {
-                trace!("Unsupported event: {:?}", event);
+                // trace!("Unsupported event: {:?}", event);
             }
         }
         None
