@@ -4,7 +4,8 @@ use std::{
 };
 
 use movy_types::abi::{
-    MoveAbiSignatureToken, MoveFunctionAbi, MoveModuleAbi, MoveModuleId, MovePackageAbi,
+    MoveAbiSignatureToken, MoveFunctionAbi, MoveFunctionVisibility, MoveModuleAbi, MoveModuleId,
+    MovePackageAbi,
 };
 use petgraph::{graph::NodeIndex, visit::EdgeRef};
 use serde::{Deserialize, Serialize};
@@ -113,6 +114,9 @@ impl MoveTypeGraph {
         log::trace!("Analyze module {}", &module.module_id);
         self.modules.insert(module.module_id.clone());
         for func in module.functions.iter() {
+            if func.visibility != MoveFunctionVisibility::Public {
+                continue;
+            }
             self.add_function(func, &module.module_id);
         }
     }
