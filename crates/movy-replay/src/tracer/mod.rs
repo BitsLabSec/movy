@@ -5,7 +5,7 @@ pub mod fuzz;
 pub mod op;
 pub mod oracle;
 pub mod tree;
-
+pub mod trace;
 #[derive(Default)]
 pub struct NopTracer;
 

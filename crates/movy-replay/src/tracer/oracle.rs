@@ -1,5 +1,4 @@
-use move_trace_format::format::TraceEvent;
-use move_vm_stack::Stack;
+use move_trace_format::{format::TraceEvent};
 use movy_types::{
     error::MovyError,
     input::{FunctionIdent, MoveSequence},
@@ -7,7 +6,10 @@ use movy_types::{
 };
 use sui_types::effects::TransactionEffects;
 
-use crate::tracer::concolic::ConcolicState;
+use crate::tracer::{
+    concolic::ConcolicState,
+    trace::TraceState,
+};
 
 pub trait SuiGeneralOracle<T, S> {
     fn pre_execution(
@@ -20,7 +22,7 @@ pub trait SuiGeneralOracle<T, S> {
     fn event(
         &mut self,
         event: &TraceEvent,
-        stack: Option<&Stack>,
+        trace_state: &TraceState,
         symbol_stack: &ConcolicState,
         current_function: Option<&FunctionIdent>,
         state: &mut S,
@@ -47,7 +49,7 @@ impl<T, S> SuiGeneralOracle<T, S> for () {
     fn event(
         &mut self,
         _event: &TraceEvent,
-        _stack: Option<&Stack>,
+        _trace_state: &TraceState,
         _symbol_stack: &ConcolicState,
         _current_function: Option<&movy_types::input::FunctionIdent>,
         _state: &mut S,
@@ -83,18 +85,18 @@ where
     fn event(
         &mut self,
         event: &TraceEvent,
-        stack: Option<&Stack>,
+        trace_state: &TraceState,
         symbol_stack: &ConcolicState,
         current_function: Option<&movy_types::input::FunctionIdent>,
         state: &mut S,
     ) -> Result<Vec<OracleFinding>, MovyError> {
         Ok(self
             .0
-            .event(event, stack, symbol_stack, current_function.clone(), state)?
+            .event(event, trace_state, symbol_stack, current_function.clone(), state)?
             .into_iter()
             .chain(
                 self.1
-                    .event(event, stack, symbol_stack, current_function, state)?
+                    .event(event, trace_state, symbol_stack, current_function, state)?
                     .into_iter(),
             )
             .collect())
@@ -145,7 +147,7 @@ where
     fn event(
         &mut self,
         event: &TraceEvent,
-        stack: Option<&Stack>,
+        trace_state: &TraceState,
         symbol_stack: &ConcolicState,
         current_function: Option<&FunctionIdent>,
         state: &mut S,
@@ -154,7 +156,7 @@ where
             return Ok(vec![]);
         }
         self.oracle
-            .event(event, stack, symbol_stack, current_function, state)
+            .event(event, trace_state, symbol_stack, current_function, state)
     }
 
     fn done_execution(

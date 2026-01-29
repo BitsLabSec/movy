@@ -10,6 +10,7 @@ use libafl_bolts::tuples::{Handle, MatchNameRef, RefIndexable};
 use log::trace;
 use movy_replay::{
     db::{ObjectStoreInfo, ObjectStoreMintObject},
+    event::{ModuleProvider, NotifierTracer},
     exec::{ExecutionTracedResults, SuiExecutor},
     tracer::{concolic::ConcolicState, fuzz::SuiFuzzTracer, op::Log, oracle::SuiGeneralOracle},
 };
@@ -18,6 +19,8 @@ use movy_types::{
     input::{FunctionIdent, MoveAddress},
     oracle::{Event, OracleFinding},
 };
+use move_core_types::account_address::AccountAddress;
+use movy_types::error::MovyError;
 use serde::{Deserialize, Serialize};
 use sui_types::{
     effects::TransactionEffectsAPI,
@@ -32,6 +35,51 @@ use crate::{
 };
 
 pub const CODE_OBSERVER_NAME: &str = "code_observer";
+
+pub struct FuzzModuleProvider<'a, E> {
+    env: &'a E,
+}
+
+impl<'a, E> FuzzModuleProvider<'a, E>
+where
+    E: ObjectStore,
+{
+    pub fn new(env: &'a E) -> Self {
+        Self { env }
+    }
+}
+
+impl<'a, E> ModuleProvider for FuzzModuleProvider<'a, E>
+where
+    E: ObjectStore,
+{
+    fn get_module(
+        &mut self,
+        address: AccountAddress,
+        name: &str,
+    ) -> Result<Option<move_binary_format::CompiledModule>, MovyError> {
+        use sui_types::base_types::ObjectID;
+
+        let db = self.env;
+        let package_id = ObjectID::from(address);
+
+        let package_obj = match db.get_object(&package_id) {
+            Some(obj) => obj,
+            None => return Ok(None),
+        };
+
+        if let Some(pkg) = package_obj.data.try_as_package() {
+            for (module_name, bytes) in pkg.serialized_module_map() {
+                if module_name.as_str() == name {
+                    let module = move_binary_format::CompiledModule::deserialize_with_defaults(bytes)?;
+                    return Ok(Some(module));
+                }
+            }
+        }
+
+        Ok(None)
+    }
+}
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ExecutionExtraOutcome {
@@ -92,6 +140,7 @@ impl<T, OT, RT, I, S> HasObservers for SuiFuzzExecutor<T, OT, RT, I, S> {
 impl<EM, Z, T, OT, RT, I, S, E> Executor<EM, I, S, Z> for SuiFuzzExecutor<T, OT, RT, I, S>
 where
     T: ObjectStore + BackingStore + ObjectSuiStoreCommit + ObjectStoreMintObject + ObjectStoreInfo,
+    E: ObjectStore,
     OT: ObserversTuple<I, S>,
     RT: for<'a> SuiGeneralOracle<CachedStore<&'a T>, S>,
     I: MoveInput,
@@ -127,8 +176,16 @@ where
         trace!("Executing input: {}", input.sequence());
         state.executions_mut().add_assign(1);
         let gas_id = state.fuzz_state().gas_id;
-        let tracer = SuiFuzzTracer::new(&mut self.ob, state, &mut self.oracles, CODE_OBSERVER_NAME);
-
+        let provider = FuzzModuleProvider::new(&self.executor.db);
+        let tracer = NotifierTracer::with_provider(
+            SuiFuzzTracer::new(
+                &mut self.ob,
+                state,
+                &mut self.oracles,
+                CODE_OBSERVER_NAME,
+            ),
+            provider,
+        );
         let result = self.executor.run_ptb_with_gas(
             input.sequence().to_ptb()?,
             epoch,
@@ -146,6 +203,7 @@ where
 
         let mut trace_outcome = tracer
             .expect("tracer should be present when tracing is enabled")
+            .into_inner()
             .outcome();
 
         trace!("Execution finished with status: {:?}", effects.status());

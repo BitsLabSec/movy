@@ -1,12 +1,11 @@
 use move_binary_format::file_format::Bytecode;
-use move_trace_format::format::TraceEvent;
-use move_vm_stack::Stack;
+use move_trace_format::{format::TraceEvent};
 use movy_types::input::MoveSequence;
 use movy_types::oracle::OracleFinding;
 use serde_json::json;
 
 use movy_replay::tracer::concolic::value_bitwidth;
-use movy_replay::tracer::{concolic::ConcolicState, oracle::SuiGeneralOracle};
+use movy_replay::tracer::{concolic::ConcolicState, oracle::SuiGeneralOracle,trace::TraceState};
 use movy_types::error::MovyError;
 use sui_types::effects::TransactionEffects;
 
@@ -26,24 +25,20 @@ impl<T, S> SuiGeneralOracle<T, S> for TypeConversionOracle {
     fn event(
         &mut self,
         event: &TraceEvent,
-        stack: Option<&Stack>,
+        trace_state: &TraceState,
         _symbol_stack: &ConcolicState,
         current_function: Option<&movy_types::input::FunctionIdent>,
         _state: &mut S,
     ) -> Result<Vec<OracleFinding>, MovyError> {
         match event {
-            TraceEvent::BeforeInstruction {
+            TraceEvent::Instruction {
                 pc, instruction, ..
             } => {
-                let stack = match stack {
-                    Some(s) => s,
-                    None => return Ok(vec![]),
-                };
-                let Ok(vals_iter) = stack.last_n(1) else {
+                let stack = &trace_state.operand_stack;
+                if stack.len() < 1 {
                     return Ok(vec![]);
-                };
-                let vals: Vec<_> = vals_iter.collect();
-                let val = vals.first().unwrap();
+                }
+                let val = &stack[stack.len() - 1];
                 let unnecessary = match instruction {
                     Bytecode::CastU8 => value_bitwidth(val) == 8,
                     Bytecode::CastU16 => value_bitwidth(val) == 16,

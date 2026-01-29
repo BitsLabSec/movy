@@ -6,7 +6,6 @@ use move_trace_format::{
     format::{Frame, TraceEvent, TraceValue},
     interface::Tracer,
 };
-use move_vm_stack::Stack;
 
 #[derive(Debug, Clone)]
 pub struct FrameTraced {
@@ -132,7 +131,7 @@ impl Tracer for TreeTracer {
         &mut self,
         event: &move_trace_format::format::TraceEvent,
         _writer: &mut move_trace_format::interface::Writer<'_>,
-        _stack: Option<&Stack>,
+        _stack: Option<&move_vm_stack::Stack>,
     ) {
         let inner = &mut self.inner;
         inner.evs.push(event.clone());

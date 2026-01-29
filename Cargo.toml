@@ -46,7 +46,7 @@ rand_core_sui = {version = "0.6.4", package = "rand_core"}
 rand_core_libafl = {version = "0.9", package = "rand_core"}
 const-hex = "1.14.1"
 serde_json_any_key = "2.0.0"
-pprof = { version = "0.15"}
+pprof = { version = "0.15", features = ["frame-pointer"]}
 z3 = "0.16"
 z3-sys = "0.9.10"
 tempfile = "3"

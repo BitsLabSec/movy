@@ -1,11 +1,16 @@
 use std::{cmp::Ordering, collections::BTreeMap, str::FromStr};
 
-use log::{debug, trace, warn};
+use log::{trace, warn};
 use move_binary_format::file_format::Bytecode;
 use move_core_types::{language_storage::TypeTag, u256::U256};
-use move_trace_format::format::{Effect, ExtraInstructionInformation, TraceEvent, TypeTagWithRefs};
-use move_vm_stack::Stack;
-use move_vm_types::values::{Reference, VMValueCast, Value};
+use move_trace_format::{
+    format::{Effect, ExtraInstructionInformation, TraceEvent, TraceValue, TypeTagWithRefs},
+    value::SerializableMoveValue,
+};
+use move_trace_format::format;
+use crate::tracer::{
+    trace::TraceState
+};
 use z3::ast::{Ast, Bool, Int};
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -17,13 +22,6 @@ enum PrimitiveValue {
     U64(u64),
     U128(u128),
     U256(U256),
-}
-
-fn try_value_as<T>(v: &Value) -> Option<T>
-where
-    Value: VMValueCast<T>,
-{
-    v.copy_value().ok()?.value_as::<T>().ok()
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -72,37 +70,17 @@ impl PrimitiveValue {
     }
 }
 
-fn extract_primitive_value(v: &Value) -> PrimitiveValue {
-    if let Some(reference) = try_value_as::<Reference>(v) {
-        let inner = reference
-            .read_ref()
-            .expect("failed to read reference for comparison");
-        return extract_primitive_value(&inner);
+fn extract_primitive_value(v: &TraceValue) -> PrimitiveValue {
+    match v.snapshot() {
+        SerializableMoveValue::Bool(b) => PrimitiveValue::Bool(*b),
+        SerializableMoveValue::U8(u) => PrimitiveValue::U8(*u),
+        SerializableMoveValue::U16(u) => PrimitiveValue::U16(*u),
+        SerializableMoveValue::U32(u) => PrimitiveValue::U32(*u),
+        SerializableMoveValue::U64(u) => PrimitiveValue::U64(*u),
+        SerializableMoveValue::U128(u) => PrimitiveValue::U128(*u),
+        SerializableMoveValue::U256(u) => PrimitiveValue::U256(*u),
+        v => panic!("Unsupported value type {:?} for comparison", v),
     }
-
-    if let Some(b) = try_value_as::<bool>(v) {
-        return PrimitiveValue::Bool(b);
-    }
-    if let Some(u) = try_value_as::<u8>(v) {
-        return PrimitiveValue::U8(u);
-    }
-    if let Some(u) = try_value_as::<u16>(v) {
-        return PrimitiveValue::U16(u);
-    }
-    if let Some(u) = try_value_as::<u32>(v) {
-        return PrimitiveValue::U32(u);
-    }
-    if let Some(u) = try_value_as::<u64>(v) {
-        return PrimitiveValue::U64(u);
-    }
-    if let Some(u) = try_value_as::<u128>(v) {
-        return PrimitiveValue::U128(u);
-    }
-    if let Some(u) = try_value_as::<U256>(v) {
-        return PrimitiveValue::U256(u);
-    }
-
-    panic!("Unsupported value type {:?} for comparison", v);
 }
 
 fn compare_value_impl(v1: &PrimitiveValue, v2: &PrimitiveValue) -> Ordering {
@@ -121,18 +99,27 @@ fn compare_value_impl(v1: &PrimitiveValue, v2: &PrimitiveValue) -> Ordering {
     }
 }
 
-pub fn compare_value(v1: &Value, v2: &Value) -> Ordering {
+pub fn compare_value(v1: &TraceValue, v2: &TraceValue) -> Ordering {
     let p1 = extract_primitive_value(v1);
     let p2 = extract_primitive_value(v2);
     compare_value_impl(&p1, &p2)
 }
 
-pub fn value_to_u256(v: &Value) -> U256 {
+pub fn value_to_u256(v: &TraceValue) -> U256 {
     extract_primitive_value(v).as_u256()
 }
 
-pub fn value_bitwidth(v: &Value) -> u32 {
+pub fn value_bitwidth(v: &TraceValue) -> u32 {
     extract_primitive_value(v).bitwidth()
+}
+
+fn stack_top2(stack: &[TraceValue]) -> (&TraceValue, &TraceValue) {
+    let len = stack.len();
+    (&stack[len - 2], &stack[len - 1])
+}
+
+fn stack_top1(stack: &[TraceValue]) -> &TraceValue {
+    &stack[stack.len() - 1]
 }
 
 fn int_two_pow(bits: u32) -> Int {
@@ -287,7 +274,7 @@ impl ConcolicState {
         }
     }
 
-    fn resolve_value(value: &Value) -> Int {
+    fn resolve_value(value: &TraceValue) -> Int {
         match extract_primitive_value(value) {
             PrimitiveValue::Bool(b) => {
                 let int_val = if b { 1 } else { 0 };
@@ -301,37 +288,12 @@ impl ConcolicState {
             PrimitiveValue::U256(u) => Int::from_str(&u.to_string()).unwrap(),
         }
     }
-
-    pub fn notify_event(&mut self, event: &TraceEvent, stack: Option<&Stack>) -> Option<Bool> {
-        if self.disable {
-            return None;
-        }
-        if let Some(s) = stack {
-            if self.stack.len() != s.value.len() && s.value.is_empty() {
-                self.stack.clear();
-            }
-            if let TraceEvent::Effect(v) = event
-                && let Effect::ExecutionError(_) = v.as_ref()
-            {
-                self.stack.pop();
-            }
-            if self.stack.len() != s.value.len() {
-                warn!(
-                    "stack: {:?}, stack from trace: {:?}, event: {:?}, disabling concolic execution",
-                    self.stack, s.value, event
-                );
-                self.disable = true;
-                return None;
-            }
-        } else {
-            trace!("No stack available for event: {:?}", event);
-        }
-
-        let mut process_binary_op = || {
+    #[inline]
+    fn process_binary_op(&mut self, stack: &[TraceValue]) -> Option<(Int, Int)> {
             let (rhs, lhs) = (self.stack.pop().unwrap(), self.stack.pop().unwrap());
-            let mut stack_iter = stack.unwrap().last_n(2).unwrap();
-            let true_lhs = stack_iter.next().unwrap();
-            let true_rhs = stack_iter.next().unwrap();
+            let stack_len = stack.len();
+            let true_lhs = &stack[stack_len - 2];
+            let true_rhs = &stack[stack_len - 1];
             let (new_l, new_r) = match (lhs, rhs) {
                 (SymbolValue::Value(l), SymbolValue::Value(r)) => (l, r),
                 (SymbolValue::Value(l), SymbolValue::Unknown) => {
@@ -347,7 +309,22 @@ impl ConcolicState {
                 }
             };
             Some((new_l, new_r))
-        };
+    }
+    pub fn notify_event(&mut self, event: &TraceEvent, trace_state: &TraceState, extra: Option<format::ExtraInstructionInformation>) -> Option<Bool> {
+        if self.disable {
+            return None;
+        }
+        let stack = &trace_state.operand_stack;
+        // if self.stack.len() != stack.len() && stack.is_empty() {
+        //     self.stack.clear();
+        // }
+        if let TraceEvent::Effect(v) = event
+            && let Effect::ExecutionError(_) = v.as_ref()
+        {
+            self.stack.pop();
+        }
+
+
 
         match event {
             TraceEvent::External(v) => {
@@ -359,7 +336,7 @@ impl ConcolicState {
             }
             TraceEvent::OpenFrame { frame, gas_left: _ } => {
                 trace!("Open frame: {:?}", frame);
-                trace!("Current stack: {:?}", stack.map(|s| &s.value));
+                trace!("Current stack: {:?}", &trace_state.operand_stack);
                 let param_count = frame.parameters.len();
                 if self.locals.is_empty() {
                     let mut locals = if frame.locals_types.is_empty() {
@@ -413,22 +390,29 @@ impl ConcolicState {
                 return_: _,
                 gas_left: _,
             } => {
-                trace!("Close frame. Current stack: {:?}", stack.map(|s| &s.value));
+                trace!("Close frame. Current stack: {:?}", &trace_state.operand_stack);
                 self.locals.pop();
             }
-            TraceEvent::BeforeInstruction {
-                type_parameters: _,
+            TraceEvent::Instruction {
                 pc,
-                gas_left: _,
                 instruction,
-                extra,
+                ..
             } => {
+                if self.stack.len() != stack.len() {
+                        warn!(
+                            "stack: {:?}, stack from trace: {:?}, event: {:?}, disabling concolic execution",
+                            self.stack, stack, event
+                        );
+                        self.disable = true;
+                        return None;
+                    }
+
                 trace!(
                     "Before instruction at pc {}: {:?}, extra: {:?}. Current stack: {:?}",
                     pc,
                     instruction,
                     extra,
-                    stack.map(|s| &s.value)
+                    &trace_state.operand_stack
                 );
                 match instruction {
                     Bytecode::Pop
@@ -500,7 +484,7 @@ impl ConcolicState {
                         }
                     }
                     Bytecode::Add => {
-                        if let Some((l, r)) = process_binary_op() {
+                        if let Some((l, r)) = self.process_binary_op(stack) {
                             // overflow check not implemented yet
                             let sum = l + r;
                             self.stack.push(SymbolValue::Value(sum));
@@ -509,7 +493,7 @@ impl ConcolicState {
                         }
                     }
                     Bytecode::Sub => {
-                        if let Some((l, r)) = process_binary_op() {
+                        if let Some((l, r)) = self.process_binary_op(stack) {
                             // overflow check not implemented yet
                             let diff = l - r;
                             self.stack.push(SymbolValue::Value(diff));
@@ -518,7 +502,7 @@ impl ConcolicState {
                         }
                     }
                     Bytecode::Mul => {
-                        if let Some((l, r)) = process_binary_op() {
+                        if let Some((l, r)) = self.process_binary_op(stack) {
                             // overflow check not implemented yet
                             let prod = l * r;
                             self.stack.push(SymbolValue::Value(prod));
@@ -527,7 +511,7 @@ impl ConcolicState {
                         }
                     }
                     Bytecode::Div => {
-                        if let Some((l, r)) = process_binary_op() {
+                        if let Some((l, r)) = self.process_binary_op(stack) {
                             // overflow check not implemented yet
                             let quot = l / r;
                             self.stack.push(SymbolValue::Value(quot));
@@ -536,7 +520,7 @@ impl ConcolicState {
                         }
                     }
                     Bytecode::Mod => {
-                        if let Some((l, r)) = process_binary_op() {
+                        if let Some((l, r)) = self.process_binary_op(stack) {
                             // overflow check not implemented yet
                             let rem = l % r;
                             self.stack.push(SymbolValue::Value(rem));
@@ -546,9 +530,7 @@ impl ConcolicState {
                     }
                     Bytecode::And | Bytecode::BitAnd => {
                         let (rhs, lhs) = (self.stack.pop().unwrap(), self.stack.pop().unwrap());
-                        let mut stack_iter = stack.unwrap().last_n(2).unwrap();
-                        let true_lhs = stack_iter.next().unwrap();
-                        let true_rhs = stack_iter.next().unwrap();
+                        let (true_lhs, true_rhs) = stack_top2(stack);
 
                         let bit_width = value_bitwidth(true_lhs);
                         let (true_l, true_r) = (value_to_u256(true_lhs), value_to_u256(true_rhs));
@@ -571,9 +553,7 @@ impl ConcolicState {
                     }
                     Bytecode::Or | Bytecode::BitOr => {
                         let (rhs, lhs) = (self.stack.pop().unwrap(), self.stack.pop().unwrap());
-                        let mut stack_iter = stack.unwrap().last_n(2).unwrap();
-                        let true_lhs = stack_iter.next().unwrap();
-                        let true_rhs = stack_iter.next().unwrap();
+                        let (true_lhs, true_rhs) = stack_top2(stack);
 
                         let bit_width = value_bitwidth(true_lhs);
                         let (true_l, true_r) = (value_to_u256(true_lhs), value_to_u256(true_rhs));
@@ -596,9 +576,7 @@ impl ConcolicState {
                     }
                     Bytecode::Xor => {
                         let (rhs, lhs) = (self.stack.pop().unwrap(), self.stack.pop().unwrap());
-                        let mut stack_iter = stack.unwrap().last_n(2).unwrap();
-                        let true_lhs = stack_iter.next().unwrap();
-                        let true_rhs = stack_iter.next().unwrap();
+                        let (true_lhs, true_rhs) = stack_top2(stack);
 
                         let bit_width = value_bitwidth(true_lhs);
                         let (true_l, true_r) = (value_to_u256(true_lhs), value_to_u256(true_rhs));
@@ -621,9 +599,7 @@ impl ConcolicState {
                     }
                     Bytecode::Shl => {
                         let (rhs, lhs) = (self.stack.pop().unwrap(), self.stack.pop().unwrap());
-                        let mut stack_iter = stack.unwrap().last_n(2).unwrap();
-                        let true_lhs = stack_iter.next().unwrap();
-                        let true_rhs = stack_iter.next().unwrap();
+                        let (true_lhs, true_rhs) = stack_top2(stack);
                         let bit_width = value_bitwidth(true_lhs);
                         let true_r = value_to_u256(true_rhs).unchecked_as_u32();
                         let threshold = Self::max_u_bits(bit_width);
@@ -647,9 +623,7 @@ impl ConcolicState {
                     }
                     Bytecode::Shr => {
                         let (rhs, lhs) = (self.stack.pop().unwrap(), self.stack.pop().unwrap());
-                        let mut stack_iter = stack.unwrap().last_n(2).unwrap();
-                        let _true_lhs = stack_iter.next().unwrap();
-                        let true_rhs = stack_iter.next().unwrap();
+                        let (_true_lhs, true_rhs) = stack_top2(stack);
 
                         let true_r = value_to_u256(true_rhs).unchecked_as_u32();
                         match (lhs, rhs) {
@@ -672,9 +646,7 @@ impl ConcolicState {
                         if let Some(v) = self.stack.pop() {
                             match v {
                                 SymbolValue::Value(n) => {
-                                    let bit_width = value_bitwidth(
-                                        stack.unwrap().last_n(1).unwrap().next().unwrap(),
-                                    );
+                                    let bit_width = value_bitwidth(stack_top1(stack));
                                     let not_n = int_bvnot(&n, bit_width);
                                     self.stack.push(SymbolValue::Value(not_n));
                                 }
@@ -739,9 +711,7 @@ impl ConcolicState {
                     }
                     Bytecode::Eq => {
                         let (rhs, lhs) = (self.stack.pop().unwrap(), self.stack.pop().unwrap());
-                        let mut stack_iter = stack.unwrap().last_n(2).unwrap();
-                        let true_lhs = stack_iter.next().unwrap();
-                        let true_rhs = stack_iter.next().unwrap();
+                        let (true_lhs, true_rhs) = stack_top2(stack);
                         let (new_l, new_r) = match (lhs, rhs) {
                             (SymbolValue::Value(l), SymbolValue::Value(r)) => (l, r),
                             (SymbolValue::Value(l), SymbolValue::Unknown) => {
@@ -772,9 +742,7 @@ impl ConcolicState {
                     }
                     Bytecode::Neq => {
                         let (rhs, lhs) = (self.stack.pop().unwrap(), self.stack.pop().unwrap());
-                        let mut stack_iter = stack.unwrap().last_n(2).unwrap();
-                        let true_lhs = stack_iter.next().unwrap();
-                        let true_rhs = stack_iter.next().unwrap();
+                        let (true_lhs, true_rhs) = stack_top2(stack);
                         let (new_l, new_r) = match (lhs, rhs) {
                             (SymbolValue::Value(l), SymbolValue::Value(r)) => (l, r),
                             (SymbolValue::Value(l), SymbolValue::Unknown) => {
@@ -805,9 +773,7 @@ impl ConcolicState {
                     }
                     Bytecode::Lt => {
                         let (rhs, lhs) = (self.stack.pop().unwrap(), self.stack.pop().unwrap());
-                        let mut stack_iter = stack.unwrap().last_n(2).unwrap();
-                        let true_lhs = stack_iter.next().unwrap();
-                        let true_rhs = stack_iter.next().unwrap();
+                        let (true_lhs, true_rhs) = stack_top2(stack);
                         let (new_l, new_r) = match (lhs, rhs) {
                             (SymbolValue::Value(l), SymbolValue::Value(r)) => (l, r),
                             (SymbolValue::Value(l), SymbolValue::Unknown) => {
@@ -838,9 +804,7 @@ impl ConcolicState {
                     }
                     Bytecode::Le => {
                         let (rhs, lhs) = (self.stack.pop().unwrap(), self.stack.pop().unwrap());
-                        let mut stack_iter = stack.unwrap().last_n(2).unwrap();
-                        let true_lhs = stack_iter.next().unwrap();
-                        let true_rhs = stack_iter.next().unwrap();
+                        let (true_lhs, true_rhs) = stack_top2(stack);
                         let (new_l, new_r) = match (lhs, rhs) {
                             (SymbolValue::Value(l), SymbolValue::Value(r)) => (l, r),
                             (SymbolValue::Value(l), SymbolValue::Unknown) => {
@@ -871,9 +835,7 @@ impl ConcolicState {
                     }
                     Bytecode::Gt => {
                         let (rhs, lhs) = (self.stack.pop().unwrap(), self.stack.pop().unwrap());
-                        let mut stack_iter = stack.unwrap().last_n(2).unwrap();
-                        let true_lhs = stack_iter.next().unwrap();
-                        let true_rhs = stack_iter.next().unwrap();
+                        let (true_lhs, true_rhs) = stack_top2(stack);
                         let (new_l, new_r) = match (lhs, rhs) {
                             (SymbolValue::Value(l), SymbolValue::Value(r)) => (l, r),
                             (SymbolValue::Value(l), SymbolValue::Unknown) => {
@@ -904,9 +866,7 @@ impl ConcolicState {
                     }
                     Bytecode::Ge => {
                         let (rhs, lhs) = (self.stack.pop().unwrap(), self.stack.pop().unwrap());
-                        let mut stack_iter = stack.unwrap().last_n(2).unwrap();
-                        let true_lhs = stack_iter.next().unwrap();
-                        let true_rhs = stack_iter.next().unwrap();
+                        let (true_lhs, true_rhs) = stack_top2(stack);
                         let (new_l, new_r) = match (lhs, rhs) {
                             (SymbolValue::Value(l), SymbolValue::Value(r)) => (l, r),
                             (SymbolValue::Value(l), SymbolValue::Unknown) => {
