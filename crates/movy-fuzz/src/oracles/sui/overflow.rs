@@ -47,7 +47,7 @@ impl<T, S> SuiGeneralOracle<T, S> for OverflowOracle {
         _state: &mut S,
     ) -> Result<Vec<OracleFinding>, MovyError> {
         match event {
-            TraceEvent::BeforeInstruction {
+            TraceEvent::Instruction {
                 pc, instruction, ..
             } => {
                 if !matches!(instruction, Bytecode::Shl) {

@@ -6,9 +6,10 @@ use libafl_bolts::tuples::{Handle, MatchName, MatchNameRef};
 use log::{trace, warn};
 use move_binary_format::file_format::Bytecode;
 use move_trace_format::{
-    format::{Effect, TraceEvent, TraceValue},
+    format::{Effect, TraceEvent, TraceValue, ExtraInstructionInformation},
     interface::{Tracer, Writer},
 };
+use move_trace_format::format;
 use movy_types::{error::MovyError, input::FunctionIdent, oracle::OracleFinding};
 
 use crate::tracer::{
@@ -168,7 +169,7 @@ where
         Ok((lhs, rhs))
     }
 
-    pub fn notify_event(&mut self, event: &TraceEvent) -> Result<(), MovyError> {
+    pub fn notify_event(&mut self, event: &TraceEvent, extra: Option<ExtraInstructionInformation>) -> Result<(), MovyError> {
         let oracle_vulns = self.oracles.event(
             event,
             &self.trace_state,
@@ -185,7 +186,7 @@ where
         let constraint = self
             .outcome
             .concolic
-            .notify_event(event, &self.trace_state);
+            .notify_event(event, &self.trace_state, extra.clone());
         trace!("Tracing event: {:?}", event);
         match event {
             TraceEvent::OpenFrame { frame, gas_left: _ } => {
@@ -211,12 +212,10 @@ where
                 self.coverage.call_end_package();
                 self.current_functions.pop();
             }
-            TraceEvent::BeforeInstruction {
-                type_parameters: _,
+            TraceEvent::Instruction {
                 pc,
-                gas_left: _,
                 instruction,
-                extra: _,
+                ..
             } => {
                 // if let Some(metrics) = self.state.eval_metrics_mut() {
                 //     if let Some(current) = self.current_functions.last() {
@@ -340,7 +339,7 @@ where
     ) {
         self.trace_state.notify(event, writer, None);
     }
-    fn notify_event(&mut self, event: &TraceEvent) -> Result<(), MovyError> {
-        SuiFuzzTracer::notify_event(self, event)
+    fn notify_event(&mut self, event: &TraceEvent, extra: Option<format::ExtraInstructionInformation>) -> Result<(), MovyError> {
+        SuiFuzzTracer::notify_event(self, event, extra)
     }
 }

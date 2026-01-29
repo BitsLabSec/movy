@@ -49,7 +49,7 @@ impl<T, S> SuiGeneralOracle<T, S> for InfiniteLoopOracle {
                 let key = hash_to_u64(&key);
                 self.branch_counts.remove(&key);
             }
-            TraceEvent::BeforeInstruction {
+            TraceEvent::Instruction {
                 pc, instruction, ..
             } => {
                 match instruction {

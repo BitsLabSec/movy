@@ -29,7 +29,7 @@ impl ModuleProvider for NoModuleProvider {
 }
 
 pub trait TraceNotifier {
-    fn notify_event(&mut self, event: &TraceEvent) -> Result<(), MovyError>;
+    fn notify_event(&mut self, event: &TraceEvent, extra: Option<ExtraInstructionInformation>) -> Result<(), MovyError>;
     fn notify(
         &mut self,
         event: &TraceEvent,
@@ -110,7 +110,7 @@ where
 fn create_before_instruction<N, P>(
     tracer: &mut NotifierTracer<N, P>,
     event: &TraceEvent,
-) -> Option<TraceEvent>
+) -> Option<ExtraInstructionInformation>
 where
     N: TraceNotifier,
     P: ModuleProvider,
@@ -210,13 +210,7 @@ where
                 } else {}
             }
 
-            Some(TraceEvent::BeforeInstruction {
-                pc: *pc,
-                instruction: instruction.clone(),
-                extra,
-                type_parameters: vec![],
-                gas_left: 0,
-            })
+            extra
         }
         _ => None,
     }
@@ -245,7 +239,7 @@ where
                 let name = frame.module.name().to_string();
                 // self.module_stack = Some((address, name));
                 self.module_stack.push((address, name));
-                if let Err(e) = self.notifier.notify_event(event) {
+                if let Err(e) = self.notifier.notify_event(event, None) {
                     log::error!("NotifierTracer: failed to notify OpenFrame: {:?}", e);
                 }
             }
@@ -257,26 +251,32 @@ where
             } => {
                 // self.module_stack = None;
                 self.module_stack.pop();
-                if let Err(e) = self.notifier.notify_event(event) {
+                if let Err(e) = self.notifier.notify_event(event, None) {
                     log::error!("NotifierTracer: failed to notify CloseFrame: {:?}", e);
                 }
             }
 
             TraceEvent::Instruction { .. } => {
                 // send before instruction
-                if let Some(before_instruction) = create_before_instruction(self, event) {
-                    if let Err(e) = self.notifier.notify_event(&before_instruction) {
-                        log::error!("NotifierTracer: failed to notify BeforeInstruction: {:?}", e);
-                    }
-                }
+                // if let Some(before_instruction) = create_before_instruction(self, event) {
+                //     if let Err(e) = self.notifier.notify_event(&before_instruction) {
+                //         log::error!("NotifierTracer: failed to notify BeforeInstruction: {:?}", e);
+                //     }
+                // }
                 // send instruction
-                if let Err(e) = self.notifier.notify_event(event) {
-                    log::error!("NotifierTracer: failed to notify Instruction: {:?}", e);
+                if let Some(extra) = create_before_instruction(self, event) {
+                    if let Err(e) = self.notifier.notify_event(event, Some(extra)) {
+                        log::error!("NotifierTracer: failed to notify Instruction: {:?}", e);
+                    }
+                } else {
+                    if let Err(e) = self.notifier.notify_event(event, None) {
+                        log::error!("NotifierTracer: failed to notify Instruction: {:?}", e);
+                    }
                 }
             }
 
             _ => {
-                if let Err(e) = self.notifier.notify_event(event) {
+                if let Err(e) = self.notifier.notify_event(event, None) {
                     log::error!("NotifierTracer: failed to notify event: {:?}", e);
                 }
             }

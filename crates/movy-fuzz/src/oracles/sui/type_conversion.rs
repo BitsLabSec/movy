@@ -31,7 +31,7 @@ impl<T, S> SuiGeneralOracle<T, S> for TypeConversionOracle {
         _state: &mut S,
     ) -> Result<Vec<OracleFinding>, MovyError> {
         match event {
-            TraceEvent::BeforeInstruction {
+            TraceEvent::Instruction {
                 pc, instruction, ..
             } => {
                 let stack = &trace_state.operand_stack;

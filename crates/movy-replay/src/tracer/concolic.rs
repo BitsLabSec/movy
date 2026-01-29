@@ -7,6 +7,7 @@ use move_trace_format::{
     format::{Effect, ExtraInstructionInformation, TraceEvent, TraceValue, TypeTagWithRefs},
     value::SerializableMoveValue,
 };
+use move_trace_format::format;
 use crate::tracer::{
     trace::TraceState
 };
@@ -309,7 +310,7 @@ impl ConcolicState {
             };
             Some((new_l, new_r))
     }
-    pub fn notify_event(&mut self, event: &TraceEvent, trace_state: &TraceState) -> Option<Bool> {
+    pub fn notify_event(&mut self, event: &TraceEvent, trace_state: &TraceState, extra: Option<format::ExtraInstructionInformation>) -> Option<Bool> {
         if self.disable {
             return None;
         }
@@ -392,12 +393,10 @@ impl ConcolicState {
                 trace!("Close frame. Current stack: {:?}", &trace_state.operand_stack);
                 self.locals.pop();
             }
-            TraceEvent::BeforeInstruction {
-                type_parameters: _,
+            TraceEvent::Instruction {
                 pc,
-                gas_left: _,
                 instruction,
-                extra,
+                ..
             } => {
                 if self.stack.len() != stack.len() {
                         warn!(
@@ -407,6 +406,7 @@ impl ConcolicState {
                         self.disable = true;
                         return None;
                     }
+
                 trace!(
                     "Before instruction at pc {}: {:?}, extra: {:?}. Current stack: {:?}",
                     pc,

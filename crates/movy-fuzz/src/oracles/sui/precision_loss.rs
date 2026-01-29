@@ -32,7 +32,7 @@ impl<T, S> SuiGeneralOracle<T, S> for PrecisionLossOracle {
         _state: &mut S,
     ) -> Result<Vec<OracleFinding>, MovyError> {
         match event {
-            TraceEvent::BeforeInstruction {
+            TraceEvent::Instruction {
                 pc, instruction, ..
             } => {
                 let loss = match instruction {

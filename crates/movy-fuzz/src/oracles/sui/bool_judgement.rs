@@ -42,7 +42,7 @@ impl<T, S> SuiGeneralOracle<T, S> for BoolJudgementOracle {
         _state: &mut S,
     ) -> Result<Vec<OracleFinding>, MovyError> {
         match event {
-            TraceEvent::BeforeInstruction {
+            TraceEvent::Instruction {
                 pc, instruction, ..
             } => {
                 let stack_syms = &symbol_stack.stack;
