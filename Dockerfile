@@ -15,4 +15,4 @@ FROM rust:trixie AS runner
 RUN apt update && apt install libz3-dev libssl-dev -y
 COPY --from=builder /work/target/release/movy /usr/bin/movy
 
-ENTRYPOINT [ "/work/target/release/movy" ]
+ENTRYPOINT [ "/usr/bin/movy" ]
