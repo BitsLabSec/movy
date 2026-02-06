@@ -96,6 +96,28 @@ fn package_modules_match(
     Ok(&compiled_map == pkg.serialized_module_map())
 }
 
+fn record_zero_address_modules(
+    module_addr_map: &mut BTreeMap<String, ObjectID>,
+    modules: &[CompiledModule],
+    package_addr: ObjectID,
+) -> Result<(), MovyError> {
+    for module in modules.iter() {
+        let name = module.name().to_string();
+        if let Some(prev) = module_addr_map.insert(name.clone(), package_addr)
+            && prev != package_addr
+        {
+            return Err(eyre!(
+                "duplicate zero-address module name {} mapped to both {} and {}",
+                name,
+                prev,
+                package_addr
+            )
+            .into());
+        }
+    }
+    Ok(())
+}
+
 impl<T> SuiTestingEnv<T> {
     pub fn inner(&self) -> &T {
         &self.db
@@ -278,6 +300,7 @@ impl<
                     }
 
                     let dep_self_addr = ObjectID::from(*modules[0].address());
+                    let dep_is_zero_addr = dep_self_addr == ObjectID::ZERO;
 
                     if let Some(ov) = package_address_overrides.and_then(|m| m.get(dep_name)) {
                         let original = ov.original.unwrap_or(ov.published_at);
@@ -308,30 +331,19 @@ impl<
                         );
                         original_to_storage.insert(original_id, storage_id);
 
-                        if dep_self_addr == ObjectID::ZERO {
-                            for md in modules.iter() {
-                                let name = md.name().to_string();
-                                if let Some(prev) =
-                                    zero_module_addr_map.insert(name.clone(), original_id)
-                                {
-                                    if prev != original_id {
-                                        return Err(eyre!(
-                                            "duplicate zero-address module name {} mapped to both {} and {}",
-                                            name,
-                                            prev,
-                                            original_id
-                                        )
-                                        .into());
-                                    }
-                                }
-                            }
+                        if dep_is_zero_addr {
+                            record_zero_address_modules(
+                                &mut zero_module_addr_map,
+                                modules,
+                                original_id,
+                            )?;
                         }
                         continue;
                     }
 
                     let mut dep_pkg =
                         SuiCompiledPackage::new_unpublished(dep_name.clone(), modules.clone());
-                    if dep_self_addr == ObjectID::ZERO && !zero_module_addr_map.is_empty() {
+                    if dep_is_zero_addr && !zero_module_addr_map.is_empty() {
                         if let Err(e) = dep_pkg.rewrite_deps_by_module_name(&zero_module_addr_map) {
                             log::debug!(
                                 "ERROR: rewrite deps by module name failed for dep {}: {:?}",
@@ -492,28 +504,18 @@ impl<
                         dep_address
                     );
 
-                    if dep_self_addr == ObjectID::ZERO {
-                        for md in modules.iter() {
-                            let name = md.name().to_string();
-                            if let Some(prev) =
-                                zero_module_addr_map.insert(name.clone(), dep_address)
-                            {
-                                if prev != dep_address {
-                                    log::debug!(
-                                        "ERROR: duplicate zero-address module name {} mapped to both {} and {}",
-                                        name,
-                                        prev,
-                                        dep_address
-                                    );
-                                    return Err(eyre!(
-                                        "duplicate zero-address module name {} mapped to both {} and {}",
-                                        name,
-                                        prev,
-                                        dep_address
-                                    )
-                                    .into());
-                                }
-                            }
+                    if dep_is_zero_addr {
+                        if let Err(e) = record_zero_address_modules(
+                            &mut zero_module_addr_map,
+                            modules,
+                            dep_address,
+                        ) {
+                            log::debug!(
+                                "ERROR: zero-address module map update failed for dep {}: {:?}",
+                                dep_name,
+                                e
+                            );
+                            return Err(e);
                         }
                     }
                 }
