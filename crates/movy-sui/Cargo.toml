@@ -33,6 +33,7 @@ url = {workspace = true}
 auto_impl = {workspace = true}
 move-compiler = {workspace = true}
 move-binary-format = {workspace = true}
+move-core-types = {workspace = true}
 move-package = {workspace = true}
 sui-move-build = {workspace = true}
 sui-package-management = { workspace = true }

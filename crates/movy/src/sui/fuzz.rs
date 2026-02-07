@@ -198,7 +198,7 @@ impl SuiFuzzArgs {
             MoveTypeTag::from_str("0x2::sui::SUI").unwrap(),
             MoveOwner::AddressOwner(self.deployer),
             gas_id.into(),
-            100_000_000_000,
+            10_000_000_000_000,
         )?;
         let testing_env = SuiTestingEnv::new(env);
         testing_env.mock_testing_std()?;

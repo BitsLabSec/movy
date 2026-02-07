@@ -1,4 +1,9 @@
-use std::{ops::Deref, str::FromStr, sync::Arc};
+use std::{
+    collections::{BTreeMap, BTreeSet, VecDeque},
+    ops::Deref,
+    str::FromStr,
+    sync::Arc,
+};
 
 use color_eyre::eyre::eyre;
 use itertools::Itertools;
@@ -11,12 +16,14 @@ use sui_types::{
     TypeTag,
     base_types::{ObjectID, SuiAddress},
     committee::ProtocolVersion,
+    digests::TransactionDigest,
     effects::{TransactionEffects, TransactionEffectsAPI},
     gas::SuiGasStatus,
     inner_temporary_store::InnerTemporaryStore,
     metrics::LimitsMetrics,
-    object::Owner,
-    storage::{BackingStore, ObjectStore, WriteKind},
+    move_package::MovePackage,
+    object::{Object, Owner},
+    storage::{BackingPackageStore, BackingStore, ObjectStore, WriteKind},
     supported_protocol_versions::{Chain, ProtocolConfig},
     transaction::{
         Argument, CallArg, CheckedInputObjects, Command, InputObjectKind, ObjectReadResult,
@@ -59,7 +66,12 @@ impl<R> Deref for ExecutionTracedResults<R> {
 
 impl<T> SuiExecutor<T>
 where
-    T: ObjectStore + BackingStore + ObjectSuiStoreCommit + ObjectStoreMintObject + ObjectStoreInfo,
+    T: ObjectStore
+        + BackingStore
+        + BackingPackageStore
+        + ObjectSuiStoreCommit
+        + ObjectStoreMintObject
+        + ObjectStoreInfo,
 {
     pub fn new(db: T) -> Result<Self, MovyError> {
         let protocol_config: ProtocolConfig =
@@ -214,7 +226,7 @@ where
     ) -> Result<ExecutionTracedResults<R>, MovyError> {
         let gas = self.db.get_move_object_info(gas.into())?.sui_reference();
         let tx_kind = TransactionKind::ProgrammableTransaction(ptb.clone());
-        let tx_data = TransactionData::new(tx_kind, sender, gas, 1_000_000_000, 1);
+        let tx_data = TransactionData::new(tx_kind, sender, gas, 100_000_000_000, 1);
 
         self.run_tx_trace(tx_data, epoch, epoch_ms, tracer)
     }
@@ -241,6 +253,22 @@ where
             .sui_reference();
 
         self.run_ptb_with_gas(ptb, epoch, epoch_ms, sender, gas_ref.0, tracer)
+    }
+
+    fn load_dependency_package(&self, dep: &ObjectID) -> Result<MovePackage, MovyError> {
+        let mut obj = self.db.get_object(dep);
+        if obj.is_none() {
+            if let Ok(Some(pkg)) = self.db.get_package_object(dep) {
+                obj = Some(pkg.into());
+            }
+        }
+        let Some(object) = obj else {
+            return Err(eyre!("package {} not found", dep).into());
+        };
+        let Some(pkg) = object.data.try_as_package() else {
+            return Err(eyre!("object {} is not a package", dep).into());
+        };
+        Ok(pkg.clone())
     }
 
     pub fn deploy_contract(
@@ -278,6 +306,67 @@ where
                 }
             }
         }
+        let mut all_deps: BTreeSet<ObjectID> = dependencies.iter().copied().collect();
+        let mut queue: VecDeque<ObjectID> = dependencies.iter().copied().collect();
+        while let Some(dep) = queue.pop_front() {
+            let Some(object) = self.db.get_object(&dep).or_else(|| {
+                self.db
+                    .get_package_object(&dep)
+                    .ok()
+                    .flatten()
+                    .map(Into::into)
+            }) else {
+                continue;
+            };
+            let Some(pkg) = object.data.try_as_package() else {
+                continue;
+            };
+            for info in pkg.linkage_table().values() {
+                let id = info.upgraded_id;
+                if all_deps.insert(id) {
+                    queue.push_back(id);
+                }
+            }
+        }
+
+        let mut canonical_by_original: BTreeMap<ObjectID, (ObjectID, u64)> = BTreeMap::new();
+        for dep in all_deps.iter() {
+            if let Some(object) = self.db.get_object(dep).or_else(|| {
+                self.db
+                    .get_package_object(dep)
+                    .ok()
+                    .flatten()
+                    .map(Into::into)
+            }) {
+                if let Some(pkg) = object.data.try_as_package() {
+                    let original_id = pkg.original_package_id();
+                    let (upgraded_id, upgraded_version) =
+                        if let Some(info) = pkg.linkage_table().get(&original_id) {
+                            (info.upgraded_id, info.upgraded_version.value())
+                        } else {
+                            (*dep, object.version().value())
+                        };
+                    let entry = canonical_by_original
+                        .entry(original_id)
+                        .or_insert((upgraded_id, upgraded_version));
+                    if upgraded_version > entry.1 {
+                        *entry = (upgraded_id, upgraded_version);
+                    }
+                } else {
+                    canonical_by_original
+                        .entry(*dep)
+                        .or_insert((*dep, object.version().value()));
+                }
+            } else {
+                canonical_by_original.entry(*dep).or_insert((*dep, 0));
+            }
+        }
+        let canonical_deps: Vec<ObjectID> = canonical_by_original.values().map(|v| v.0).collect();
+        debug!(
+            "Publish deps list (normalized): {}",
+            canonical_deps.iter().map(|v| v.to_string()).join(", ")
+        );
+
         let mut modules_bytes = vec![];
         for module in &modules {
             let mut buf = vec![];
@@ -288,7 +377,7 @@ where
         let ptb = ProgrammableTransaction {
             inputs: vec![CallArg::Pure(bcs::to_bytes(&admin)?)],
             commands: vec![
-                Command::Publish(modules_bytes, dependencies.clone()), // This produces an upgrade cap
+                Command::Publish(modules_bytes, canonical_deps.clone()), // This produces an upgrade cap
                 Command::TransferObjects(vec![Argument::Result(0)], Argument::Input(0)),
             ],
         };
@@ -321,5 +410,128 @@ where
         } else {
             Err(eyre!("fail to deploy").into())
         }
+    }
+
+    pub fn force_deploy_contract_at(
+        &mut self,
+        package_id: ObjectID,
+        project: SuiCompiledPackage,
+    ) -> Result<ObjectID, MovyError> {
+        log::info!("force publish package at {}", package_id);
+        let (modules, dependencies) = project.into_deployment();
+        let mut dep_packages = Vec::new();
+        for dep in dependencies.iter() {
+            if *dep == package_id {
+                continue;
+            }
+            dep_packages.push(self.load_dependency_package(dep)?);
+        }
+        let object = Object::new_package(
+            &modules,
+            TransactionDigest::genesis_marker(),
+            &self.protocol_config,
+            dep_packages.iter(),
+        )?;
+        if object.id() != package_id {
+            return Err(eyre!(
+                "forced publish id mismatch: expected {}, got {}",
+                package_id,
+                object.id()
+            )
+            .into());
+        }
+        log::info!("force publish success at {}", package_id);
+        self.db.commit_single_object(object)?;
+        Ok(package_id)
+    }
+
+    /// Force redeploy an *upgraded* package at an existing storage ID.
+    ///
+    /// This is used when the package storage ID differs from the runtime/original ID embedded in
+    /// module bytes (Sui upgrade semantics). We reuse the currently stored package as the "previous"
+    /// version and bump the package version in-place to keep linkage resolution working.
+    pub fn force_redeploy_upgraded_contract_at(
+        &mut self,
+        storage_id: ObjectID,
+        project: SuiCompiledPackage,
+    ) -> Result<ObjectID, MovyError> {
+        log::info!("force redeploy upgraded package at {}", storage_id);
+
+        let prev_obj = self
+            .db
+            .get_object(&storage_id)
+            .or_else(|| {
+                self.db
+                    .get_package_object(&storage_id)
+                    .ok()
+                    .flatten()
+                    .map(Into::into)
+            })
+            .ok_or_else(|| eyre!("previous package {} not found", storage_id))?;
+        let prev_pkg = prev_obj
+            .data
+            .try_as_package()
+            .ok_or_else(|| eyre!("object {} is not a package", storage_id))?
+            .clone();
+        log::debug!(
+            "previous package storage_id={} version={} original_id={}",
+            storage_id,
+            prev_pkg.version().value(),
+            prev_pkg.original_package_id()
+        );
+
+        let (modules, dependencies) = project.into_deployment();
+        let runtime_id = modules
+            .first()
+            .map(|m| ObjectID::from(*m.address()))
+            .unwrap_or(ObjectID::ZERO);
+        log::debug!(
+            "redeploy upgraded package storage_id={} new_runtime_id={} modules={} deps={}",
+            storage_id,
+            runtime_id,
+            modules.len(),
+            dependencies
+                .iter()
+                .map(|d| d.to_string())
+                .collect::<Vec<_>>()
+                .join(",")
+        );
+
+        let mut dep_packages = Vec::new();
+        for dep in dependencies.iter() {
+            if *dep == storage_id {
+                continue;
+            }
+            dep_packages.push(self.load_dependency_package(dep)?);
+        }
+
+        let object = Object::new_upgraded_package(
+            &prev_pkg,
+            storage_id,
+            &modules,
+            TransactionDigest::genesis_marker(),
+            &self.protocol_config,
+            dep_packages.iter(),
+        )?;
+
+        if object.id() != storage_id {
+            return Err(eyre!(
+                "forced redeploy id mismatch: expected {}, got {}",
+                storage_id,
+                object.id()
+            )
+            .into());
+        }
+
+        if let Some(pkg) = object.data.try_as_package() {
+            log::debug!(
+                "redeploy result storage_id={} version={} original_id={}",
+                storage_id,
+                pkg.version().value(),
+                pkg.original_package_id()
+            );
+        }
+        self.db.commit_single_object(object)?;
+        Ok(storage_id)
     }
 }

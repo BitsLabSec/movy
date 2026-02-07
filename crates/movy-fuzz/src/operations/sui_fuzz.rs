@@ -32,8 +32,7 @@ use movy_replay::exec::SuiExecutor;
 use movy_replay::tracer::oracle::{CouldDisabledOralce, SuiGeneralOracle};
 use movy_sui::database::cache::{CachedStore, ObjectSuiStoreCommit};
 use movy_types::error::MovyError;
-use sui_types::storage::BackingStore;
-use sui_types::storage::{BackingPackageStore, ObjectStore};
+use sui_types::storage::{BackingPackageStore, BackingStore, ObjectStore};
 
 pub fn oracles<T, S, E>(
     typed_bug_abort: bool,
@@ -70,6 +69,7 @@ where
         + ObjectStore
         + ObjectSuiStoreCommit
         + BackingStore
+        + BackingPackageStore
         + BackingPackageStore
         + Clone
         + 'static,
@@ -245,6 +245,7 @@ pub fn fuzz(
         + ObjectStoreInfo
         + ObjectSuiStoreCommit
         + BackingStore
+        + BackingPackageStore
         + Clone
         + 'static,
     >,
