@@ -4,8 +4,8 @@ pub mod concolic;
 pub mod fuzz;
 pub mod op;
 pub mod oracle;
+pub mod trace;
 pub mod tree;
-
 #[derive(Default)]
 pub struct NopTracer;
 
@@ -13,9 +13,9 @@ impl Tracer for NopTracer {
     fn notify(
         &mut self,
         _event: &move_trace_format::format::TraceEvent,
-        _writer: &mut move_trace_format::interface::Writer<'_>,
-        _stack: Option<&move_vm_stack::Stack>,
-    ) {
+        _writer: move_trace_format::interface::Writer<'_>,
+    ) -> bool {
+        true
     }
 }
 
@@ -32,12 +32,11 @@ where
     fn notify(
         &mut self,
         event: &move_trace_format::format::TraceEvent,
-        writer: &mut move_trace_format::interface::Writer<'_>,
-        stack: Option<&move_vm_stack::Stack>,
-    ) {
+        writer: move_trace_format::interface::Writer<'_>,
+    ) -> bool {
         match self {
-            Self::T1(t) => t.notify(event, writer, stack),
-            Self::T2(t) => t.notify(event, writer, stack),
+            Self::T1(t) => t.notify(event, writer),
+            Self::T2(t) => t.notify(event, writer),
         }
     }
 }
@@ -62,11 +61,12 @@ where
     fn notify(
         &mut self,
         event: &move_trace_format::format::TraceEvent,
-        writer: &mut move_trace_format::interface::Writer<'_>,
-        stack: Option<&move_vm_stack::Stack>,
-    ) {
+        writer: move_trace_format::interface::Writer<'_>,
+    ) -> bool {
         if let Some(tracer) = &mut self.tracer {
-            tracer.notify(event, writer, stack);
+            tracer.notify(event, writer)
+        } else {
+            true
         }
     }
 }
@@ -84,10 +84,8 @@ where
     fn notify(
         &mut self,
         event: &move_trace_format::format::TraceEvent,
-        writer: &mut move_trace_format::interface::Writer<'_>,
-        stack: Option<&move_vm_stack::Stack>,
-    ) {
-        self.t1.notify(event, writer, stack);
-        self.t2.notify(event, writer, stack);
+        writer: move_trace_format::interface::Writer<'_>,
+    ) -> bool {
+        self.t1.notify(event, writer)
     }
 }

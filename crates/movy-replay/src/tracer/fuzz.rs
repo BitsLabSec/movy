@@ -1,22 +1,24 @@
 use std::{borrow::Cow, collections::BTreeMap, marker::PhantomData};
 
-use color_eyre::eyre::{OptionExt, eyre};
+use color_eyre::eyre::eyre;
 use libafl::{executors::ExitKind, observers::StdMapObserver};
 use libafl_bolts::tuples::{Handle, MatchName, MatchNameRef};
 use log::{trace, warn};
 use move_binary_format::file_format::Bytecode;
 use move_trace_format::{
-    format::{Effect, TraceEvent},
-    interface::Tracer,
+    format::{Effect, TraceEvent, TraceValue},
+    interface::{Tracer, Writer},
 };
-use move_vm_stack::Stack;
-use move_vm_types::values::IntegerValue;
 use movy_types::{error::MovyError, input::FunctionIdent, oracle::OracleFinding};
 
-use crate::tracer::{
-    concolic::ConcolicState,
-    op::{CastLog, CmpLog, CmpOp, Log, Magic, ShlLog},
-    oracle::SuiGeneralOracle,
+use crate::{
+    event::InstructionExtraInformation,
+    tracer::{
+        concolic::ConcolicState,
+        op::{CastLog, CmpLog, CmpOp, Log, Magic, ShlLog},
+        oracle::SuiGeneralOracle,
+        trace::TraceState,
+    },
 };
 
 #[derive(Debug)]
@@ -127,6 +129,7 @@ where
 {
     current_functions: Vec<FunctionIdent>,
     coverage: CoverageTracer<'a, OT>,
+    trace_state: TraceState,
     state: &'s mut S,
     outcome: TraceOutcome,
     oracles: &'s mut O,
@@ -147,6 +150,7 @@ where
         Self {
             current_functions: vec![],
             coverage: CoverageTracer::new(ob, ob_name),
+            trace_state: TraceState::new(),
             state,
             outcome: TraceOutcome::new(),
             oracles,
@@ -158,37 +162,19 @@ where
         self.outcome
     }
 
-    fn bin_ops(stack: Option<&Stack>) -> Result<(Magic, Magic), MovyError> {
-        if let Some(stack) = stack {
-            let stack_len = stack.value.len();
-            let rhs = stack
-                .value
-                .get(stack_len - 1)
-                .ok_or_else(|| eyre!("stack less than 2?!"))?
-                .copy_value()?
-                .value_as::<IntegerValue>()?
-                .into();
-            let lhs = stack
-                .value
-                .get(stack_len - 2)
-                .ok_or_else(|| eyre!("stack less than 2?!"))?
-                .copy_value()?
-                .value_as::<IntegerValue>()?
-                .into();
-            Ok((lhs, rhs))
-        } else {
-            Err(eyre!("we need two values on top of stack but get none...").into())
+    fn bin_ops(stack: &[TraceValue]) -> Result<(Magic, Magic), MovyError> {
+        if stack.len() < 2 {
+            return Err(eyre!("stack less than 2?!").into());
         }
+        let lhs = Magic::try_from(&stack[stack.len() - 2])?;
+        let rhs = Magic::try_from(&stack[stack.len() - 1])?;
+        Ok((lhs, rhs))
     }
 
-    pub fn notify_event(
-        &mut self,
-        event: &TraceEvent,
-        stack: Option<&move_vm_stack::Stack>,
-    ) -> Result<(), MovyError> {
+    fn apply_oracle_findings(&mut self, event: &TraceEvent) -> Result<(), MovyError> {
         let oracle_vulns = self.oracles.event(
             event,
-            stack,
+            &self.trace_state,
             &self.outcome.concolic,
             self.current_functions.last(),
             self.state,
@@ -199,7 +185,118 @@ where
         for info in oracle_vulns {
             self.outcome.findings.push(info);
         }
-        let constraint = self.outcome.concolic.notify_event(event, stack);
+        Ok(())
+    }
+
+    pub fn handle_before_instruction(
+        &mut self,
+        ctx: &TraceEvent,
+        extra: Option<&InstructionExtraInformation>,
+    ) -> Result<(), MovyError> {
+        let TraceEvent::Instruction {
+            pc, instruction, ..
+        } = ctx
+        else {
+            return Ok(());
+        };
+
+        self.apply_oracle_findings(ctx)?;
+        let constraint =
+            self.outcome
+                .concolic
+                .handle_before_instruction(ctx, extra, &self.trace_state);
+
+        self.coverage.may_do_coverage(*pc);
+        match instruction {
+            Bytecode::BrFalse(_)
+            | Bytecode::BrTrue(_)
+            | Bytecode::Branch(_)
+            | Bytecode::VariantSwitch(_) => {
+                self.coverage.will_branch();
+            }
+            Bytecode::Lt
+            | Bytecode::Le
+            | Bytecode::Ge
+            | Bytecode::Gt
+            | Bytecode::Neq
+            | Bytecode::Eq => match Self::bin_ops(&self.trace_state.operand_stack) {
+                Ok((lhs, rhs)) => {
+                    if let Some(current_function) = self.current_functions.first() {
+                        let op = CmpOp::try_from(instruction)?;
+                        self.outcome
+                            .logs
+                            .entry(current_function.clone())
+                            .or_default()
+                            .push(Log::CmpLog(CmpLog {
+                                lhs,
+                                rhs,
+                                op,
+                                constraint,
+                            }));
+                    } else {
+                        warn!("Fail to track cmplog because of no current function")
+                    }
+                }
+                Err(e) => {
+                    if !matches!(instruction, Bytecode::Eq) && !matches!(instruction, Bytecode::Neq)
+                    {
+                        warn!("Can not track cmplog due to {}", e);
+                    }
+                }
+            },
+            Bytecode::Shl => match Self::bin_ops(&self.trace_state.operand_stack) {
+                Ok((lhs, rhs)) => {
+                    if let Some(current_function) = self.current_functions.first() {
+                        self.outcome
+                            .logs
+                            .entry(current_function.clone())
+                            .or_default()
+                            .push(Log::ShlLog(ShlLog {
+                                lhs,
+                                rhs,
+                                constraint,
+                            }));
+                    } else {
+                        warn!("Fail to track cmplog because of no current function")
+                    }
+                }
+                Err(e) => {
+                    if !matches!(instruction, Bytecode::Eq) && !matches!(instruction, Bytecode::Neq)
+                    {
+                        warn!("Can not track cmplog due to {}", e);
+                    }
+                }
+            },
+            Bytecode::CastU8
+            | Bytecode::CastU16
+            | Bytecode::CastU32
+            | Bytecode::CastU64
+            | Bytecode::CastU128 => {
+                if let Some(lhs) = self.trace_state.operand_stack.last() {
+                    let lhs: Magic = Magic::try_from(lhs)?;
+                    if let Some(current_function) = self.current_functions.first() {
+                        self.outcome
+                            .logs
+                            .entry(current_function.clone())
+                            .or_default()
+                            .push(Log::CastLog(CastLog { lhs, constraint }));
+                    } else {
+                        warn!("Fail to track castlog because of no current function")
+                    }
+                } else {
+                    warn!("Can not track castlog due to stack empty");
+                }
+            }
+            _ => {}
+        }
+        Ok(())
+    }
+
+    pub fn notify_event(&mut self, event: &TraceEvent) -> Result<(), MovyError> {
+        if !matches!(event, TraceEvent::Instruction { .. }) {
+            self.apply_oracle_findings(event)?;
+            let _ = self.outcome.concolic.notify_event(event, &self.trace_state);
+        }
         trace!("Tracing event: {:?}", event);
         match event {
             TraceEvent::OpenFrame { frame, gas_left: _ } => {
@@ -225,107 +322,6 @@ where
                 self.coverage.call_end_package();
                 self.current_functions.pop();
             }
-            TraceEvent::BeforeInstruction {
-                type_parameters: _,
-                pc,
-                gas_left: _,
-                instruction,
-                extra: _,
-            } => {
-                // if let Some(metrics) = self.state.eval_metrics_mut() {
-                //     if let Some(current) = self.current_functions.last() {
-                //         metrics.on_pc(&current.0, &current.1, *pc);
-                //     } else {
-                //         warn!("no current function when before instruction at {}", pc);
-                //     }
-                // }
-                self.coverage.may_do_coverage(*pc);
-                match instruction {
-                    Bytecode::BrFalse(_)
-                    | Bytecode::BrTrue(_)
-                    | Bytecode::Branch(_)
-                    | Bytecode::VariantSwitch(_) => {
-                        self.coverage.will_branch();
-                    }
-                    Bytecode::Lt
-                    | Bytecode::Le
-                    | Bytecode::Ge
-                    | Bytecode::Gt
-                    | Bytecode::Neq
-                    | Bytecode::Eq => match Self::bin_ops(stack) {
-                        Ok((lhs, rhs)) => {
-                            if let Some(current_function) = self.current_functions.first() {
-                                let op = CmpOp::try_from(instruction)?;
-                                self.outcome
-                                    .logs
-                                    .entry(current_function.clone())
-                                    .or_default()
-                                    .push(Log::CmpLog(CmpLog {
-                                        lhs,
-                                        rhs,
-                                        op,
-                                        constraint,
-                                    }));
-                            } else {
-                                warn!("Fail to track cmplog because of no current function")
-                            }
-                        }
-                        Err(e) => {
-                            if !matches!(instruction, Bytecode::Eq)
-                                && !matches!(instruction, Bytecode::Neq)
-                            {
-                                warn!("Can not track cmplog due to {}", e);
-                            }
-                        }
-                    },
-                    Bytecode::Shl => match Self::bin_ops(stack) {
-                        Ok((lhs, rhs)) => {
-                            if let Some(current_function) = self.current_functions.first() {
-                                self.outcome
-                                    .logs
-                                    .entry(current_function.clone())
-                                    .or_default()
-                                    .push(Log::ShlLog(ShlLog {
-                                        lhs,
-                                        rhs,
-                                        constraint,
-                                    }));
-                            } else {
-                                warn!("Fail to track cmplog because of no current function")
-                            }
-                        }
-                        Err(e) => {
-                            if !matches!(instruction, Bytecode::Eq)
-                                && !matches!(instruction, Bytecode::Neq)
-                            {
-                                warn!("Can not track cmplog due to {}", e);
-                            }
-                        }
-                    },
-                    Bytecode::CastU8
-                    | Bytecode::CastU16
-                    | Bytecode::CastU32
-                    | Bytecode::CastU64
-                    | Bytecode::CastU128 => {
-                        if let Some(Some(lhs)) = stack.map(|s| s.value.last()) {
-                            let lhs: Magic = lhs.copy_value()?.value_as::<IntegerValue>()?.into();
-                            if let Some(current_function) = self.current_functions.first() {
-                                self.outcome
-                                    .logs
-                                    .entry(current_function.clone())
-                                    .or_default()
-                                    .push(Log::CastLog(CastLog { lhs, constraint }));
-                            } else {
-                                warn!("Fail to track castlog because of no current function")
-                            }
-                        } else {
-                            warn!("Can not track castlog due to stack empty");
-                        }
-                    }
-
-                    _ => {}
-                }
-            }
             TraceEvent::Effect(e) => {
                 if let Effect::ExecutionError(e) = e.as_ref()
                     && e.contains("!! TRACING ERROR !!")
@@ -340,19 +336,23 @@ where
     }
 }
 
-impl<'a, 's, S, O, T, OT> Tracer for SuiFuzzTracer<'a, 's, S, O, T, OT>
+impl<'a, 's, S, O, T, OT> crate::event::TraceNotifier for SuiFuzzTracer<'a, 's, S, O, T, OT>
 where
     O: SuiGeneralOracle<T, S>,
     OT: MatchNameRef + MatchName,
 {
-    fn notify(
+    fn notify(&mut self, event: &TraceEvent, writer: &mut Writer<'_>) {
+        let _ = writer;
+        self.trace_state.notify_event(event);
+    }
+    fn notify_event(&mut self, event: &TraceEvent) -> Result<(), MovyError> {
+        SuiFuzzTracer::notify_event(self, event)
+    }
+    fn handle_before_instruction(
         &mut self,
-        event: &TraceEvent,
-        _writer: &mut move_trace_format::interface::Writer<'_>,
-        stack: Option<&move_vm_stack::Stack>,
-    ) {
-        if let Err(e) = self.notify_event(event, stack) {
-            warn!("Error during tracing: {}", e);
-        }
+        ctx: &TraceEvent,
+        extra: Option<&InstructionExtraInformation>,
+    ) -> Result<(), MovyError> {
+        SuiFuzzTracer::handle_before_instruction(self, ctx, extra)
     }
 }
