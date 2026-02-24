@@ -50,7 +50,7 @@ impl SuiBuildDeployArgs {
             MoveTypeTag::from_str("0x2::sui::SUI").unwrap(),
             MoveOwner::AddressOwner(self.roles.deployer),
             gas_id.into(),
-            100_000_000_000,
+            100_000_000_000_0000,
         )?;
         let testing_env = SuiTestingEnv::new(env.wrapped());
         testing_env.mock_testing_std()?;

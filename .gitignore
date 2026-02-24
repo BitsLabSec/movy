@@ -6,3 +6,4 @@ build
 log
 *.log
 flamegraph.svg
+*.bcs

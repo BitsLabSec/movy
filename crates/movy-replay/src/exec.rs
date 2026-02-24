@@ -256,7 +256,7 @@ where
     ) -> Result<ExecutionTracedResults<R>, MovyError> {
         let gas = self.db.get_move_object_info(gas.into())?.sui_reference();
         let tx_kind = TransactionKind::ProgrammableTransaction(ptb.clone());
-        let tx_data = TransactionData::new(tx_kind, sender, gas, 1_000_000_000, 1);
+        let tx_data = TransactionData::new(tx_kind, sender, gas, 100_000_000_000_000, 1);
 
         self.run_tx_trace(tx_data, epoch, epoch_ms, tracer)
     }
@@ -274,7 +274,7 @@ where
             TypeTag::from_str("0x2::sui::SUI").unwrap().into(),
             MoveOwner::AddressOwner(sender.into()),
             gas_id.into(),
-            10_000_000_000,
+            100_000_000_000_000,
         )?;
         let gas_ref = self
             .db

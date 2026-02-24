@@ -1,6 +1,12 @@
-use std::{collections::BTreeSet, fmt::Display, io::Write, path::Path};
+use std::{
+    collections::BTreeSet,
+    fmt::Display,
+    io::Write,
+    path::{Path, PathBuf},
+};
 
 use color_eyre::eyre::eyre;
+use fastcrypto::hash::HashFunction;
 use itertools::Itertools;
 use move_binary_format::CompiledModule;
 use move_compiler::editions::Flavor;
@@ -12,8 +18,153 @@ use movy_types::{
 };
 use serde::{Deserialize, Serialize};
 use sui_move_build::{BuildConfig, CompiledPackage};
-use sui_types::base_types::ObjectID;
-use tracing::{debug, trace};
+use sui_types::{base_types::ObjectID, crypto::DefaultHash};
+use tracing::{debug, trace, warn};
+
+fn shared_move_install_dir() -> PathBuf {
+    if let Some(path) = std::env::var_os("MOVY_MOVE_INSTALL_DIR") {
+        return PathBuf::from(path);
+    }
+    std::env::temp_dir().join("movy-move-shared-build")
+}
+
+fn compiled_package_cache_root(folder: &Path) -> PathBuf {
+    folder.join(".movy").join("cache")
+}
+
+fn move_toml_cache_key(folder: &Path) -> Result<String, MovyError> {
+    let move_toml = folder.join("Move.toml");
+    let content = std::fs::read(&move_toml)
+        .map_err(|e| eyre!("failed to read {}: {}", move_toml.display(), e))?;
+    let mut hasher = DefaultHash::default();
+    hasher.update(content);
+    let digest = hasher.finalize().digest;
+    Ok(const_hex::encode(digest))
+}
+
+fn compiled_package_cache_file(
+    folder: &Path,
+    test_mode: bool,
+    with_unpublished: bool,
+    verify_deps: bool,
+) -> Result<PathBuf, MovyError> {
+    let key = move_toml_cache_key(folder)?;
+    let mode = if test_mode { "test" } else { "non-test" };
+    let unpublished = if with_unpublished { "u1" } else { "u0" };
+    let verify = if verify_deps { "v1" } else { "v0" };
+    Ok(compiled_package_cache_root(folder)
+        .join("compiled-packages")
+        .join(key)
+        .join(format!("{mode}-{unpublished}-{verify}.bcs")))
+}
+
+fn load_compiled_package_cache(
+    folder: &Path,
+    test_mode: bool,
+    with_unpublished: bool,
+    verify_deps: bool,
+) -> Result<Option<SuiCompiledPackage>, MovyError> {
+    let cache_file = compiled_package_cache_file(folder, test_mode, with_unpublished, verify_deps)?;
+    let bytes = match std::fs::read(&cache_file) {
+        Ok(bytes) => bytes,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+            tracing::info!(
+                "Compile disk cache miss: {} (test_mode={}, unpublished_deps={}, verify_deps={})",
+                folder.display(),
+                test_mode,
+                with_unpublished,
+                verify_deps
+            );
+            return Ok(None);
+        }
+        Err(e) => {
+            warn!(
+                "Compile disk cache read failed for {}: {} (fallback to compile)",
+                cache_file.display(),
+                e
+            );
+            return Ok(None);
+        }
+    };
+
+    match bcs::from_bytes::<SuiCompiledPackage>(&bytes) {
+        Ok(cached) => {
+            tracing::info!(
+                "Compile disk cache hit: {} (test_mode={}, unpublished_deps={}, verify_deps={})",
+                folder.display(),
+                test_mode,
+                with_unpublished,
+                verify_deps
+            );
+            Ok(Some(cached))
+        }
+        Err(e) => {
+            warn!(
+                "Compile disk cache decode failed for {}: {} (fallback to compile)",
+                cache_file.display(),
+                e
+            );
+            if let Err(remove_err) = std::fs::remove_file(&cache_file) {
+                warn!(
+                    "Failed to remove broken cache file {}: {}",
+                    cache_file.display(),
+                    remove_err
+                );
+            }
+            Ok(None)
+        }
+    }
+}
+
+fn store_compiled_package_cache(
+    folder: &Path,
+    test_mode: bool,
+    with_unpublished: bool,
+    verify_deps: bool,
+    compiled: &SuiCompiledPackage,
+) {
+    let cache_file =
+        match compiled_package_cache_file(folder, test_mode, with_unpublished, verify_deps) {
+            Ok(path) => path,
+            Err(e) => {
+                warn!(
+                    "Failed to build cache key for {}: {} (skip cache write)",
+                    folder.display(),
+                    e
+                );
+                return;
+            }
+        };
+    let Some(parent) = cache_file.parent() else {
+        return;
+    };
+    if let Err(e) = std::fs::create_dir_all(parent) {
+        warn!(
+            "Failed to create compile cache dir {}: {}",
+            parent.display(),
+            e
+        );
+        return;
+    }
+    let bytes = match bcs::to_bytes(compiled) {
+        Ok(bytes) => bytes,
+        Err(e) => {
+            warn!(
+                "Failed to encode compile cache for {}: {}",
+                folder.display(),
+                e
+            );
+            return;
+        }
+    };
+    if let Err(e) = std::fs::write(&cache_file, bytes) {
+        warn!(
+            "Failed to write compile cache {}: {}",
+            cache_file.display(),
+            e
+        );
+    }
+}
 
 pub fn build_package_resolved(
     folder: &Path,
@@ -27,6 +178,7 @@ pub fn build_package_resolved(
     // Sui now tries to assign a few unique addresses for each unpublished modules (see `unique_hash` and `NamedAddress::Unpublished`)
     // We overrite this and request the behavior of the old version
     cfg.set_unpublished_deps_to_zero = true;
+    cfg.install_dir = Some(shared_move_install_dir());
 
     let cfg = BuildConfig {
         config: cfg,
@@ -179,6 +331,12 @@ impl SuiCompiledPackage {
         with_unpublished: bool,
         verify_deps: bool,
     ) -> Result<SuiCompiledPackage, MovyError> {
+        if let Some(cached) =
+            load_compiled_package_cache(folder, test_mode, with_unpublished, verify_deps)?
+        {
+            return Ok(cached);
+        }
+
         let artifacts = build_package_resolved(folder, test_mode)?;
         debug!("artifacts dep: {:?}", artifacts.dependency_ids);
         debug!("published: {:?}", artifacts.dependency_ids.published);
@@ -338,14 +496,16 @@ impl SuiCompiledPackage {
             deps.iter().map(|t| t.to_string()).join(","),
             published.iter().map(|t| t.to_string()).join(",")
         );
-        Ok(SuiCompiledPackage {
+        let compiled = SuiCompiledPackage {
             package_id: (*root_address).into(),
             package_name,
             package_names,
             modules,
             dependencies: deps.into_iter().collect(),
             published_dependencies: published,
-        })
+        };
+        store_compiled_package_cache(folder, test_mode, with_unpublished, verify_deps, &compiled);
+        Ok(compiled)
     }
 
     pub fn build(
