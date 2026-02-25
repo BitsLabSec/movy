@@ -34,6 +34,11 @@ pub struct SuiTargetArgs {
     pub objects: Option<Vec<MoveAddress>>,
     #[arg(short, long, help = "Local packages to build.")]
     pub locals: Option<Vec<PathBuf>>,
+    #[arg(
+        long,
+        help = "Enable onchain fallback, i.e. fetching addresses if they are missing. NOTE: This is dangerous and likely to cause failure."
+    )]
+    pub onchain_fallback: bool,
     #[arg(long, help = "Trace movy_init")]
     pub trace_movy_init: bool,
     #[arg(short, long, help = "Build package with unpublished dependencies")]
@@ -127,6 +132,7 @@ impl SuiTargetArgs {
                     self.unpublished_dependencies,
                     !self.disable_dependency_checks,
                     self.trace_movy_init,
+                    self.onchain_fallback,
                     rpc,
                 )
                 .await?;

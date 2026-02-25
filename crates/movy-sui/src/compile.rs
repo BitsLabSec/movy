@@ -104,6 +104,23 @@ impl SuiCompiledPackage {
         &self.dependencies
     }
 
+    pub fn modules_mut(&mut self) -> &mut Vec<CompiledModule> {
+        &mut self.modules
+    }
+
+    pub fn contains_nonzero_modules(&self) -> bool {
+        self.modules
+            .iter()
+            .any(|v| ObjectID::from(*v.address()) == ObjectID::ZERO)
+    }
+
+    pub fn all_same_address(&self) -> Option<AccountAddress> {
+        match self.modules.iter().map(|v| *v.address()).all_equal_value() {
+            Ok(v) => Some(v),
+            Err(t) => None,
+        }
+    }
+
     pub fn test_modules(&self) -> Vec<&CompiledModule> {
         self.modules
             .iter()
@@ -241,9 +258,6 @@ impl SuiCompiledPackage {
 
         if with_unpublished {
             // Dependency linkage
-            // In real sui move, in case there are compiled modules with both non-zero id and zero id, it is considered
-            // as an upgrade operation and only zero id modules are preserved.
-            // We modify all addresse sand references to make it a publish operation
             for md in modules.iter_mut() {
                 for (hd_idx, hd) in md.module_handles.clone().into_iter().enumerate() {
                     let addr_idx = hd.address.0 as usize;
@@ -296,7 +310,7 @@ impl SuiCompiledPackage {
                     let addr = *dep.address();
                     if addr == AccountAddress::ZERO {
                         return Err(eyre!(
-                            "module {}:{} still has 0x0 immediate dependency",
+                            "module {}:{} still has 0x0 immediate dependency, maybe bundling unpublished dependencies?",
                             dep.address(),
                             dep.name().as_str()
                         )

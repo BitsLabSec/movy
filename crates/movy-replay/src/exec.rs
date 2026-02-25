@@ -1,18 +1,23 @@
-use std::{ops::Deref, str::FromStr, sync::Arc};
+use std::{
+    collections::BTreeMap,
+    ops::Deref,
+    str::FromStr,
+    sync::{Arc, LazyLock, Mutex},
+};
 
 use color_eyre::eyre::eyre;
 use itertools::Itertools;
 use move_trace_format::{format::MoveTraceBuilder, interface::Tracer};
 use move_vm_runtime::move_vm::MoveVM;
 use movy_sui::{compile::SuiCompiledPackage, database::cache::ObjectSuiStoreCommit};
-use movy_types::{error::MovyError, object::MoveOwner};
+use movy_types::{error::MovyError, input::MoveAddress, object::MoveOwner};
 use sui_adapter_latest::{
     adapter::substitute_package_id,
     execution_mode::{ExecutionMode, Normal},
 };
 use sui_move_natives_latest::all_natives;
 use sui_types::{
-    TypeTag,
+    Identifier, TypeTag,
     base_types::{ObjectID, SuiAddress},
     committee::ProtocolVersion,
     digests::TransactionDigest,
@@ -20,13 +25,15 @@ use sui_types::{
     gas::SuiGasStatus,
     inner_temporary_store::InnerTemporaryStore,
     metrics::LimitsMetrics,
+    move_package::{MovePackage, UpgradeCap, UpgradePolicy},
     object::Owner,
+    programmable_transaction_builder::ProgrammableTransactionBuilder,
     storage::{BackingStore, ObjectStore, WriteKind},
     supported_protocol_versions::{Chain, ProtocolConfig},
     transaction::{
-        Argument, CallArg, CheckedInputObjects, Command, InputObjectKind, ObjectReadResult,
-        ObjectReadResultKind, ProgrammableTransaction, TransactionData, TransactionDataAPI,
-        TransactionKind,
+        Argument, CallArg, CheckedInputObjects, Command, InputObjectKind, ObjectArg,
+        ObjectReadResult, ObjectReadResultKind, ProgrammableTransaction, TransactionData,
+        TransactionDataAPI, TransactionKind,
     },
 };
 use tracing::{debug, trace, warn};
@@ -99,12 +106,13 @@ where
         Self::new_with_cheats_storage(db)
     }
 
-    pub fn run_tx_trace<R: Tracer>(
+    fn run_tx_trace_inner<R: Tracer>(
         &self,
-        tx_data: TransactionData,
+        mut tx_data: TransactionData,
         epoch: u64,
         epoch_ms: u64,
         mut tracer: Option<R>,
+        target_deployment_id: Option<ObjectID>,
     ) -> Result<ExecutionTracedResults<R>, MovyError> {
         let input_objects = match tx_data.input_objects() {
             Ok(v) => v,
@@ -199,23 +207,45 @@ where
         trace!("Tx digest is {}", tx_data.digest());
 
         let (store, gas_status, effects, _timing, result) =
-            sui_adapter_latest::execution_engine::execute_transaction_to_effects::<SuiFuzzMode>(
-                &self.db,
-                CheckedInputObjects::new_for_replay(objects.into()),
-                tx_data.gas_data().clone(),
-                gas,
-                tx_data.kind().clone(),
-                tx_data.sender(),
-                tx_data.digest(),
-                &self.movevm,
-                &epoch,
-                epoch_ms,
-                &self.protocol_config,
-                self.metrics.clone(),
-                false,
-                Ok(()),
-                &mut move_tracer,
-            );
+            if let Some(target) = target_deployment_id {
+                let _deploy = GlobalDeployment::new(&mut tx_data, target);
+                sui_adapter_latest::execution_engine::execute_transaction_to_effects::<SuiFuzzMode>(
+                    &self.db,
+                    CheckedInputObjects::new_for_replay(objects.into()),
+                    tx_data.gas_data().clone(),
+                    gas,
+                    tx_data.kind().clone(),
+                    tx_data.sender(),
+                    tx_data.digest(),
+                    &self.movevm,
+                    &epoch,
+                    epoch_ms,
+                    &self.protocol_config,
+                    self.metrics.clone(),
+                    false,
+                    Ok(()),
+                    &mut move_tracer,
+                )
+            } else {
+                sui_adapter_latest::execution_engine::execute_transaction_to_effects::<Normal>(
+                    &self.db,
+                    CheckedInputObjects::new_for_replay(objects.into()),
+                    tx_data.gas_data().clone(),
+                    gas,
+                    tx_data.kind().clone(),
+                    tx_data.sender(),
+                    tx_data.digest(),
+                    &self.movevm,
+                    &epoch,
+                    epoch_ms,
+                    &self.protocol_config,
+                    self.metrics.clone(),
+                    false,
+                    Ok(()),
+                    &mut move_tracer,
+                )
+            };
+
         drop(move_tracer);
         tracing::debug!("Result is {:?}", &result);
         Ok(ExecutionTracedResults {
@@ -226,6 +256,16 @@ where
             },
             tracer,
         })
+    }
+
+    pub fn run_tx_trace<R: Tracer>(
+        &self,
+        tx_data: TransactionData,
+        epoch: u64,
+        epoch_ms: u64,
+        tracer: Option<R>,
+    ) -> Result<ExecutionTracedResults<R>, MovyError> {
+        self.run_tx_trace_inner(tx_data, epoch, epoch_ms, tracer, None)
     }
 
     pub fn run_ptb_with_movy_tracer_gas<R: MovySuiTracerExt>(
@@ -245,6 +285,23 @@ where
         })
     }
 
+    fn run_ptb_with_gas_inner<R: Tracer>(
+        &self,
+        ptb: ProgrammableTransaction,
+        epoch: u64,
+        epoch_ms: u64,
+        sender: SuiAddress,
+        gas: ObjectID,
+        tracer: Option<R>,
+        target_deployment: Option<ObjectID>,
+    ) -> Result<ExecutionTracedResults<R>, MovyError> {
+        let gas = self.db.get_move_object_info(gas.into())?.sui_reference();
+        let tx_kind = TransactionKind::ProgrammableTransaction(ptb.clone());
+        let tx_data = TransactionData::new(tx_kind, sender, gas, 1_000_000_000, 1);
+
+        self.run_tx_trace_inner(tx_data, epoch, epoch_ms, tracer, target_deployment)
+    }
+
     pub fn run_ptb_with_gas<R: Tracer>(
         &self,
         ptb: ProgrammableTransaction,
@@ -254,11 +311,7 @@ where
         gas: ObjectID,
         tracer: Option<R>,
     ) -> Result<ExecutionTracedResults<R>, MovyError> {
-        let gas = self.db.get_move_object_info(gas.into())?.sui_reference();
-        let tx_kind = TransactionKind::ProgrammableTransaction(ptb.clone());
-        let tx_data = TransactionData::new(tx_kind, sender, gas, 1_000_000_000, 1);
-
-        self.run_tx_trace(tx_data, epoch, epoch_ms, tracer)
+        self.run_ptb_with_gas_inner(ptb, epoch, epoch_ms, sender, gas, tracer, None)
     }
 
     pub fn run_ptb_mint_gas<R: Tracer>(
@@ -285,6 +338,113 @@ where
         self.run_ptb_with_gas(ptb, epoch, epoch_ms, sender, gas_ref.0, tracer)
     }
 
+    pub fn upgrade_contract(
+        &mut self,
+        epoch: u64,
+        epoch_ms: u64,
+        deployer: SuiAddress,
+        gas: ObjectID,
+        original_id: ObjectID,
+        upgrade_cap: ObjectID,
+        project: SuiCompiledPackage,
+    ) -> Result<ObjectID, MovyError> {
+        if self.db.get_object(&original_id).is_none() {
+            return Err(eyre!("the package {} being upgraded is missing", original_id).into());
+        }
+
+        let Some(cap) = self.db.get_object(&upgrade_cap) else {
+            return Err(eyre!("upgrade cap {} missing", upgrade_cap).into());
+        };
+
+        let package_id = project.package_id;
+        let (modules, dependencies) = project.into_deployment();
+        if let Some(m) = modules
+            .iter()
+            .find(|v| ObjectID::from(*v.address()) != ObjectID::ZERO)
+        {
+            return Err(eyre!("can not upgrade modules with non-zero id: {}", m.address()).into());
+        }
+
+        let mut modules_bytes = vec![];
+        for module in &modules {
+            let mut buf = vec![];
+            module.serialize_with_version(module.version, &mut buf)?;
+            modules_bytes.push(buf);
+        }
+
+        let digest = MovePackage::compute_digest_for_modules_and_deps(
+            modules_bytes.iter(),
+            dependencies.iter(),
+            true,
+        )
+        .to_vec();
+
+        let target = if package_id != ObjectID::ZERO {
+            Some(package_id)
+        } else {
+            None
+        };
+
+        let mut builder = ProgrammableTransactionBuilder::new();
+
+        let policy = builder.pure(UpgradePolicy::Compatible as u8)?;
+        let digest = builder.pure(digest)?;
+        let cap = builder.obj(ObjectArg::ImmOrOwnedObject(cap.compute_object_reference()))?;
+        let upgrade_ticket = builder.programmable_move_call(
+            MoveAddress::two().into(),
+            Identifier::from_str("package").unwrap(),
+            Identifier::from_str("authorize_upgrade").unwrap(),
+            vec![],
+            vec![cap, policy, digest],
+        );
+        let upgrade_receipt =
+            builder.upgrade(original_id, upgrade_ticket, dependencies, modules_bytes);
+        builder.programmable_move_call(
+            MoveAddress::two().into(),
+            Identifier::from_str("package").unwrap(),
+            Identifier::from_str("commit_upgrade").unwrap(),
+            vec![],
+            vec![cap, upgrade_receipt],
+        );
+        let ptb = builder.finish();
+
+        let out = self.run_ptb_with_gas_inner::<NopTracer>(
+            ptb, epoch, epoch_ms, deployer, gas, None, target,
+        )?;
+        let ExecutionResults { effects, store, .. } = out.results;
+        // look for new objects
+        let mut new_package = None;
+        debug!(
+            "all changed: {:?}, status is {:?}",
+            effects.all_changed_objects(),
+            effects.status()
+        );
+        for t in effects.all_changed_objects() {
+            if matches!(&t.2, WriteKind::Create) && matches!(&t.1, Owner::Immutable) {
+                let object = store.written.get(&t.0.0).unwrap();
+                if object.is_package() {
+                    new_package = Some(t.0);
+                }
+            }
+        }
+        if let Some(new_package) = new_package {
+            if let Some(target) = target {
+                if new_package.0 != target {
+                    return Err(eyre!(
+                        "failed to deployed at target {} but at {}",
+                        new_package.0,
+                        target
+                    )
+                    .into());
+                }
+            }
+            self.db.commit_store(store, &effects)?;
+            Ok(new_package.0)
+        } else {
+            Err(eyre!("fail to upgrade with {:?}", effects.status()).into())
+        }
+    }
+
     pub fn deploy_contract(
         &mut self,
         epoch: u64,
@@ -292,9 +452,9 @@ where
         admin: SuiAddress,
         gas: ObjectID,
         project: SuiCompiledPackage,
-    ) -> Result<ObjectID, MovyError> {
+    ) -> Result<(ObjectID, ObjectID), MovyError> {
         let package_id = project.package_id;
-        let (mut modules, dependencies) = project.into_deployment();
+        let (modules, dependencies) = project.into_deployment();
 
         debug!(
             "Deploying package with original id {} and dependencies {:?}, modules are [{}]",
@@ -309,12 +469,11 @@ where
                 .join(",")
         );
 
-        if package_id == ObjectID::ZERO {
-            // derive id
-            let id = ObjectID::derive_id(random_digest(), self.deploy_ids);
-            self.deploy_ids += 1;
-            tracing::info!("Generate a new package id: {}", id);
-            substitute_package_id(&mut modules, id)?;
+        if let Some(m) = modules
+            .iter()
+            .find(|v| ObjectID::from(*v.address()) != ObjectID::ZERO)
+        {
+            return Err(eyre!("can not deploy modules with non-zero id: {}", m.address()).into());
         }
 
         let mut modules_bytes = vec![];
@@ -324,18 +483,26 @@ where
             modules_bytes.push(buf);
         }
 
+        let target = if package_id != ObjectID::ZERO {
+            Some(package_id)
+        } else {
+            None
+        };
+
         let ptb = ProgrammableTransaction {
             inputs: vec![CallArg::Pure(bcs::to_bytes(&admin)?)],
             commands: vec![
                 Command::Publish(modules_bytes, dependencies.clone()),
-                // Command::TransferObjects(vec![Argument::Result(0)], Argument::Input(0)), // No upgrade cap when we fixed the address
+                Command::TransferObjects(vec![Argument::Result(0)], Argument::Input(0)),
             ],
         };
 
-        let out = self.run_ptb_with_gas::<NopTracer>(ptb, epoch, epoch_ms, admin, gas, None)?;
+        let out = self
+            .run_ptb_with_gas_inner::<NopTracer>(ptb, epoch, epoch_ms, admin, gas, None, target)?;
         let ExecutionResults { effects, store, .. } = out.results;
         // look for new objects
         let mut new_object = None;
+        let mut upgrade_cap = None;
         debug!(
             "all changed: {:?}, status is {:?}",
             effects.all_changed_objects(),
@@ -348,22 +515,81 @@ where
                     new_object = Some(t.0);
                 }
             }
+
+            if matches!(&t.2, WriteKind::Create) && matches!(&t.1, Owner::AddressOwner(admin)) {
+                let object = store.written.get(&t.0.0).unwrap();
+                let is_cap = object
+                    .type_()
+                    .map(|ty| ty.is_upgrade_cap())
+                    .unwrap_or_default();
+                if is_cap {
+                    upgrade_cap = Some(t.0);
+                }
+            }
         }
         if let Some(new_object) = new_object {
-            debug!(
-                "Contract deployed at {}, original id: {}",
-                new_object.0, package_id
-            );
+            if let Some(target) = target {
+                if new_object.0 != target {
+                    return Err(eyre!(
+                        "failed to deployed at target {} but at {}",
+                        new_object.0,
+                        target
+                    )
+                    .into());
+                }
+            }
+            if let Some(cap) = upgrade_cap {
+                debug!(
+                    "Contract deployed at {}, original id: {}, cap: {}",
+                    new_object.0, package_id, cap.0
+                );
 
-            self.db.commit_store(store, &effects)?;
-            Ok(new_object.0)
+                self.db.commit_store(store, &effects)?;
+                Ok((new_object.0, cap.0))
+            } else {
+                Err(eyre!(
+                    "no upgrade cap is produced for {}, which shall not happen",
+                    new_object.0
+                )
+                .into())
+            }
         } else {
             Err(eyre!("fail to deploy with {:?}", effects.status()).into())
         }
     }
 }
 
-pub struct SuiFuzzMode;
+static TARGET_DEPLOYMENT: LazyLock<Mutex<BTreeMap<TransactionDigest, ObjectID>>> =
+    LazyLock::new(|| Mutex::new(BTreeMap::new()));
+
+struct GlobalDeployment {
+    digest: TransactionDigest,
+}
+
+impl GlobalDeployment {
+    pub fn new(tx: &mut TransactionData, target: ObjectID) -> Self {
+        loop {
+            let digest = tx.digest();
+            let mut _lock = TARGET_DEPLOYMENT.lock().unwrap();
+            if _lock.contains_key(&digest) {
+                tx.gas_data_mut().budget += 1;
+                continue;
+            } else {
+                tracing::debug!("Deployment digest {} => {}", digest, target);
+                _lock.insert(digest, target);
+                return Self { digest };
+            }
+        }
+    }
+}
+
+impl Drop for GlobalDeployment {
+    fn drop(&mut self) {
+        TARGET_DEPLOYMENT.lock().unwrap().remove(&self.digest);
+    }
+}
+
+struct SuiFuzzMode;
 
 impl ExecutionMode for SuiFuzzMode {
     type ArgumentUpdates = <Normal as ExecutionMode>::ArgumentUpdates;
@@ -414,8 +640,12 @@ impl ExecutionMode for SuiFuzzMode {
     ) -> Result<(), sui_types::error::ExecutionError> {
         Normal::finish_command_v2(acc, argument_updates, command_result)
     }
+    fn targeted_deployment(digest: &TransactionDigest) -> Option<ObjectID> {
+        tracing::debug!("Looking for targeted deployment for {}", digest);
+        TARGET_DEPLOYMENT.lock().unwrap().get(digest).map(|v| *v)
+    }
     fn packages_are_predefined() -> bool {
-        true
+        Normal::packages_are_predefined()
     }
     fn skip_conservation_checks() -> bool {
         Normal::skip_conservation_checks()

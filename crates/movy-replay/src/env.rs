@@ -8,7 +8,7 @@ use color_eyre::eyre::eyre;
 use itertools::Itertools;
 use move_core_types::account_address::AccountAddress;
 use movy_sui::{
-    compile::SuiCompiledPackage,
+    compile::{SuiCompiledPackage, mock_module_address},
     database::{cache::ObjectSuiStoreCommit, graphql::GraphQlDatabase},
     rpc::graphql::{GraphQlClient, OwnerKind},
 };
@@ -177,6 +177,7 @@ impl<
         unpublished: bool,
         verify_deps: bool,
         trace_movy_init: bool,
+        onchain_fallback: bool,
         rpc: &GraphQlDatabase,
     ) -> Result<(MoveAddress, MovePackageAbi, MovePackageAbi, Vec<String>), MovyError> {
         tracing::info!("Compiling {} with non-test mode...", path.display());
@@ -189,50 +190,108 @@ impl<
         tracing::info!("Compiled summary: {}", &compiled_result);
 
         let package_names = compiled_result.package_names.clone();
-        let compiled_result = compiled_result.movy_mock()?;
+        let mut compiled_result = compiled_result.movy_mock()?;
 
         // Deploy onchain deps or deps used by immediate dependencies
-        let mut packages_to_deploy = abi_result
-            .dependencies()
-            .iter()
-            .copied()
-            .chain(abi_result.all_modules_iter().flat_map(|t| {
-                t.immediate_dependencies()
-                    .into_iter()
-                    .map(|im| (*im.address()).into())
-            }))
-            .collect::<BTreeSet<_>>();
-        while let Some(dep) = packages_to_deploy.pop_last() {
-            let dep = AccountAddress::from(dep);
+        if onchain_fallback {
+            tracing::info!("Enabling onchain fallback...");
+            let mut packages_to_fetch = abi_result
+                .dependencies()
+                .iter()
+                .copied()
+                .chain(abi_result.all_modules_iter().flat_map(|t| {
+                    t.immediate_dependencies()
+                        .into_iter()
+                        .map(|im| (*im.address()).into())
+                }))
+                .collect::<BTreeSet<_>>();
+            while let Some(dep) = packages_to_fetch.pop_last() {
+                let dep = AccountAddress::from(dep);
 
-            if dep != AccountAddress::ZERO
-                && dep != compiled_result.package_id.into()
-                && self.db.get_object(&dep.into()).is_none()
-            {
-                tracing::info!(
-                    "Dependency {} not found in our db for {}, trying to fetch it from onchain",
-                    dep,
-                    path.display()
-                );
-                match self.fetch_package_at_address(dep.into(), rpc).await {
-                    Ok(nexts) => {
-                        packages_to_deploy.extend(nexts.into_iter());
-                    }
-                    Err(e) => {
-                        tracing::warn!(
-                            "Fail to add the object {} due to {}, this might be fine though.",
-                            dep,
-                            e
-                        );
+                if dep != AccountAddress::ZERO
+                    && dep != compiled_result.package_id.into()
+                    && self.db.get_object(&dep.into()).is_none()
+                {
+                    tracing::info!(
+                        "Dependency {} not found in our db for {}, trying to fetch it from onchain",
+                        dep,
+                        path.display()
+                    );
+                    match self.fetch_package_at_address(dep.into(), rpc).await {
+                        Ok(nexts) => {
+                            packages_to_fetch.extend(nexts.into_iter());
+                        }
+                        Err(e) => {
+                            tracing::warn!(
+                                "Fail to add the object {} due to {}, this might be fine though.",
+                                dep,
+                                e
+                            );
+                        }
                     }
                 }
             }
         }
 
         let mut executor = SuiExecutor::new(self.db.clone())?;
-        let address =
-            executor.deploy_contract(epoch, epoch_ms, deployer.into(), gas, compiled_result)?;
 
+        // Now we need to understand if we are deploying or upgrading
+        let Some(module_address) = compiled_result.all_same_address() else {
+            return Err(eyre!("{} modules' addresses not all same", compiled_result).into());
+        };
+
+        for it in compiled_result.modules_mut().iter_mut() {
+            mock_module_address(ObjectID::ZERO, it);
+        }
+
+        let module_address = ObjectID::from(module_address);
+        let address = if module_address == ObjectID::ZERO
+            || module_address == compiled_result.package_id
+        {
+            tracing::info!(
+                "Doing a normal deployment to {}...",
+                compiled_result.package_id
+            );
+            let (address, _) =
+                executor.deploy_contract(epoch, epoch_ms, deployer.into(), gas, compiled_result)?;
+            address
+        } else {
+            tracing::info!(
+                "Modules base address is {} but the package is defined as {}, we will do a deploy and then an upgrade operation",
+                module_address,
+                compiled_result.package_id
+            );
+
+            let mut original_deployment = compiled_result.clone();
+            original_deployment.package_id = module_address.into();
+            let (address, cap) = executor.deploy_contract(
+                epoch,
+                epoch_ms,
+                deployer.into(),
+                gas,
+                original_deployment,
+            )?;
+
+            tracing::info!(
+                "We have deployed the project to its original id {} with cap {}",
+                address,
+                cap
+            );
+
+            let address = executor.upgrade_contract(
+                epoch,
+                epoch_ms,
+                deployer.into(),
+                gas,
+                address,
+                cap,
+                compiled_result,
+            )?;
+
+            tracing::info!("We have upgraded to package address {}", address);
+
+            address
+        };
         // In search of any deploy functions
         let mut abi = self.db.get_package_info(address.into())?.unwrap();
 
