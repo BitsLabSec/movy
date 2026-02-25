@@ -9,6 +9,7 @@ use movy_fuzz::{
 use movy_replay::{
     db::{ObjectStoreCachedStore, ObjectStoreInfo, ObjectStoreMintObject},
     env::SuiTestingEnv,
+    exec::very_big_gas,
 };
 use movy_sui::{
     database::{cache::CachedStore, empty::EmptyStore, graphql::GraphQlDatabase},
@@ -195,7 +196,7 @@ impl SuiFuzzArgs {
             MoveTypeTag::from_str("0x2::sui::SUI").unwrap(),
             MoveOwner::AddressOwner(self.roles.deployer),
             gas_id.into(),
-            100_000_000_000_000_000_00,
+            very_big_gas(),
         )?;
         let testing_env = SuiTestingEnv::new(env.wrapped());
         testing_env.mock_testing_std()?;

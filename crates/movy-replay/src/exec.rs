@@ -44,6 +44,10 @@ pub fn testing_proto() -> ProtocolConfig {
     ProtocolConfig::get_for_version(ProtocolVersion::max(), Chain::Mainnet)
 }
 
+pub fn very_big_gas() -> u64 {
+    100_000_000_000_000_000_00
+}
+
 fn random_digest() -> TransactionDigest {
     TransactionDigest::from_str("8thja5nUwaEw7L5ji9tnhCurpkjHdMunRffxwx1H9HsT").unwrap()
 }
@@ -294,7 +298,7 @@ where
     ) -> Result<ExecutionTracedResults<R>, MovyError> {
         let gas = self.db.get_move_object_info(gas.into())?.sui_reference();
         let tx_kind = TransactionKind::ProgrammableTransaction(ptb.clone());
-        let tx_data = TransactionData::new(tx_kind, sender, gas, 1_000_000_000, 1);
+        let tx_data = TransactionData::new(tx_kind, sender, gas, very_big_gas() / 1_000, 1);
 
         self.run_tx_trace_inner(tx_data, epoch, epoch_ms, tracer, target_deployment)
     }
@@ -324,7 +328,7 @@ where
             TypeTag::from_str("0x2::sui::SUI").unwrap().into(),
             MoveOwner::AddressOwner(sender.into()),
             gas_id.into(),
-            100_000_000_000_000_000_00,
+            very_big_gas(),
         )?;
         let gas_ref = self
             .db

@@ -1,7 +1,7 @@
 use std::str::FromStr;
 
 use clap::Args;
-use movy_replay::{db::ObjectStoreMintObject, env::SuiTestingEnv};
+use movy_replay::{db::ObjectStoreMintObject, env::SuiTestingEnv, exec::very_big_gas};
 use movy_sui::{
     database::{cache::CachedStore, empty::EmptyStore, graphql::GraphQlDatabase},
     rpc::graphql::GraphQlClient,
@@ -50,7 +50,7 @@ impl SuiBuildDeployArgs {
             MoveTypeTag::from_str("0x2::sui::SUI").unwrap(),
             MoveOwner::AddressOwner(self.roles.deployer),
             gas_id.into(),
-            100_000_000_000_000_000_00,
+            very_big_gas(),
         )?;
         let testing_env = SuiTestingEnv::new(env.wrapped());
         testing_env.mock_testing_std()?;

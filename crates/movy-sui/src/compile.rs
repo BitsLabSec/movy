@@ -3,7 +3,7 @@ use std::{collections::BTreeSet, fmt::Display, io::Write, path::Path};
 use color_eyre::eyre::eyre;
 use itertools::Itertools;
 use move_binary_format::CompiledModule;
-use move_compiler::editions::Flavor;
+use move_compiler::{compiled_unit::NamedCompiledModule, editions::Flavor};
 use move_core_types::account_address::AccountAddress;
 use movy_types::{
     abi::{MOVY_INIT, MOVY_ORACLE, MovePackageAbi},
@@ -237,6 +237,56 @@ impl SuiCompiledPackage {
             }
         }
 
+        let fmt_module = |m: &NamedCompiledModule| -> String {
+            format!(
+                "NamedCompiledModule(package={}, address={}, address_name={}, module={}:{})",
+                m.package_name
+                    .map(|v| v.to_string())
+                    .unwrap_or_else(|| "-".to_string()),
+                m.address,
+                m.address_name
+                    .map(|v| v.value.to_string())
+                    .unwrap_or_else(|| "-".to_string()),
+                m.module.address(),
+                m.module.name().to_string()
+            )
+        };
+
+        let dep_addresses: Vec<(ObjectID, Option<String>)> = artifacts
+            .package
+            .deps_compiled_units
+            .iter()
+            .map(|v| {
+                (
+                    ObjectID::from(*v.1.unit.module.address()),
+                    v.1.unit.address_name.map(|t| t.value.to_string()),
+                )
+            })
+            .filter(|v| v.0 != ObjectID::ZERO)
+            .collect();
+        tracing::debug!(
+            "Dependency addresses: [{}]",
+            dep_addresses
+                .iter()
+                .map(|v| format!(
+                    "{}={}",
+                    v.1.as_ref()
+                        .map(|k| k.to_string())
+                        .unwrap_or_else(|| "-".to_string()),
+                    v.0
+                ))
+                .join(", ")
+        );
+        tracing::trace!(
+            "All dependencies: {}",
+            artifacts
+                .package
+                .deps_compiled_units
+                .iter()
+                .map(|v| { format!("{}:{}", v.0.to_string(), fmt_module(&v.1.unit)) })
+                .unique()
+                .join(", ")
+        );
         let mut modules = if with_unpublished {
             artifacts
                 .package
@@ -253,6 +303,53 @@ impl SuiCompiledPackage {
                 .package
                 .root_compiled_units
                 .into_iter()
+                .filter(|v| {
+                    if test_mode {
+                        // This filter is essential because when compiling in test mode,
+                        // you can write tests for the dependent modules, which I think is a design flaw or, bug.
+                        // For example, you can write:
+                        // ```
+                        // module dep::dep_tests
+                        // ...
+                        // ```
+                        // in the root/tests/dep_test.move. WTF!
+                        tracing::debug!(
+                            "{}: {}",
+                            artifacts
+                                .package
+                                .compiled_package_info
+                                .package_name
+                                .to_string(),
+                            fmt_module(&v.unit)
+                        );
+                        // Package name could be anything so we can not match package names (like package foo could have bar::hello_module)
+                        // The logic of sui move is just a collection of named address modules, where names are mapping to addresses. (bar = "0xabcd")
+                        // So we can not match package names and should match address names (and values if it is an original id but not 0x0)
+                        let is_dep = dep_addresses.iter().any(|(addr, name)| {
+                            // Ensure any dependency module is not appearing in the final results.
+                            *addr == ObjectID::from(*v.unit.module.address())
+                                || v.unit
+                                    .address_name
+                                    .map(|u| name.as_ref().map(|n| n == &u.value.to_string()))
+                                    .flatten()
+                                    .unwrap_or_default()
+                        });
+
+                        if is_dep {
+                            tracing::warn!(
+                                "Detected unsual module: {} and we will filter it out.",
+                                fmt_module(&v.unit)
+                            );
+                        }
+
+                        !is_dep
+                    } else {
+                        // Actually I suspect the same thing could happen during normal mode but that
+                        // certainly leads to packages that are not possible to publish so let's ignore
+                        // this scenario.
+                        true
+                    }
+                })
                 .map(|u| u.unit.module)
                 .collect_vec()
         };
