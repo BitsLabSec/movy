@@ -324,7 +324,7 @@ where
             TypeTag::from_str("0x2::sui::SUI").unwrap().into(),
             MoveOwner::AddressOwner(sender.into()),
             gas_id.into(),
-            10_000_000_000,
+            100_000_000_000_000_000_00,
         )?;
         let gas_ref = self
             .db
