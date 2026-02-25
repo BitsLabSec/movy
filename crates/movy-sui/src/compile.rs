@@ -115,10 +115,11 @@ impl SuiCompiledPackage {
     }
 
     pub fn all_same_address(&self) -> Option<AccountAddress> {
-        match self.modules.iter().map(|v| *v.address()).all_equal_value() {
-            Ok(v) => Some(v),
-            Err(t) => None,
-        }
+        self.modules
+            .iter()
+            .map(|v| *v.address())
+            .all_equal_value()
+            .ok()
     }
 
     pub fn test_modules(&self) -> Vec<&CompiledModule> {

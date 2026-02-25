@@ -263,7 +263,7 @@ impl<
             );
 
             let mut original_deployment = compiled_result.clone();
-            original_deployment.package_id = module_address.into();
+            original_deployment.package_id = module_address;
             let (address, cap) = executor.deploy_contract(
                 epoch,
                 epoch_ms,

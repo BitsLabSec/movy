@@ -7,3 +7,5 @@ log
 *.log
 flamegraph.svg
 target
+vault
+dataset

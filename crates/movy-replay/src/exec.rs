@@ -11,10 +11,7 @@ use move_trace_format::{format::MoveTraceBuilder, interface::Tracer};
 use move_vm_runtime::move_vm::MoveVM;
 use movy_sui::{compile::SuiCompiledPackage, database::cache::ObjectSuiStoreCommit};
 use movy_types::{error::MovyError, input::MoveAddress, object::MoveOwner};
-use sui_adapter_latest::{
-    adapter::substitute_package_id,
-    execution_mode::{ExecutionMode, Normal},
-};
+use sui_adapter_latest::execution_mode::{ExecutionMode, Normal};
 use sui_move_natives_latest::all_natives;
 use sui_types::{
     Identifier, TypeTag,
@@ -25,7 +22,7 @@ use sui_types::{
     gas::SuiGasStatus,
     inner_temporary_store::InnerTemporaryStore,
     metrics::LimitsMetrics,
-    move_package::{MovePackage, UpgradeCap, UpgradePolicy},
+    move_package::{MovePackage, UpgradePolicy},
     object::Owner,
     programmable_transaction_builder::ProgrammableTransactionBuilder,
     storage::{BackingStore, ObjectStore, WriteKind},
@@ -428,15 +425,15 @@ where
             }
         }
         if let Some(new_package) = new_package {
-            if let Some(target) = target {
-                if new_package.0 != target {
-                    return Err(eyre!(
-                        "failed to deployed at target {} but at {}",
-                        new_package.0,
-                        target
-                    )
-                    .into());
-                }
+            if let Some(target) = target
+                && new_package.0 != target
+            {
+                return Err(eyre!(
+                    "failed to deployed at target {} but at {}",
+                    new_package.0,
+                    target
+                )
+                .into());
             }
             self.db.commit_store(store, &effects)?;
             Ok(new_package.0)
@@ -516,7 +513,7 @@ where
                 }
             }
 
-            if matches!(&t.2, WriteKind::Create) && matches!(&t.1, Owner::AddressOwner(admin)) {
+            if matches!(&t.2, WriteKind::Create) && matches!(&t.1, Owner::AddressOwner(_admin)) {
                 let object = store.written.get(&t.0.0).unwrap();
                 let is_cap = object
                     .type_()
@@ -528,15 +525,15 @@ where
             }
         }
         if let Some(new_object) = new_object {
-            if let Some(target) = target {
-                if new_object.0 != target {
-                    return Err(eyre!(
-                        "failed to deployed at target {} but at {}",
-                        new_object.0,
-                        target
-                    )
-                    .into());
-                }
+            if let Some(target) = target
+                && new_object.0 != target
+            {
+                return Err(eyre!(
+                    "failed to deployed at target {} but at {}",
+                    new_object.0,
+                    target
+                )
+                .into());
             }
             if let Some(cap) = upgrade_cap {
                 debug!(
@@ -571,13 +568,13 @@ impl GlobalDeployment {
         loop {
             let digest = tx.digest();
             let mut _lock = TARGET_DEPLOYMENT.lock().unwrap();
-            if _lock.contains_key(&digest) {
+            if let std::collections::btree_map::Entry::Vacant(e) = _lock.entry(digest) {
+                tracing::debug!("Deployment digest {} => {}", digest, target);
+                e.insert(target);
+                return Self { digest };
+            } else {
                 tx.gas_data_mut().budget += 1;
                 continue;
-            } else {
-                tracing::debug!("Deployment digest {} => {}", digest, target);
-                _lock.insert(digest, target);
-                return Self { digest };
             }
         }
     }
@@ -642,7 +639,7 @@ impl ExecutionMode for SuiFuzzMode {
     }
     fn targeted_deployment(digest: &TransactionDigest) -> Option<ObjectID> {
         tracing::debug!("Looking for targeted deployment for {}", digest);
-        TARGET_DEPLOYMENT.lock().unwrap().get(digest).map(|v| *v)
+        TARGET_DEPLOYMENT.lock().unwrap().get(digest).copied()
     }
     fn packages_are_predefined() -> bool {
         Normal::packages_are_predefined()
