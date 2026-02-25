@@ -248,7 +248,7 @@ impl SuiCompiledPackage {
                     .map(|v| v.value.to_string())
                     .unwrap_or_else(|| "-".to_string()),
                 m.module.address(),
-                m.module.name().to_string()
+                m.module.name()
             )
         };
 
@@ -283,7 +283,7 @@ impl SuiCompiledPackage {
                 .package
                 .deps_compiled_units
                 .iter()
-                .map(|v| { format!("{}:{}", v.0.to_string(), fmt_module(&v.1.unit)) })
+                .map(|v| { format!("{}:{}", v.0, fmt_module(&v.1.unit)) })
                 .unique()
                 .join(", ")
         );
@@ -330,8 +330,7 @@ impl SuiCompiledPackage {
                             *addr == ObjectID::from(*v.unit.module.address())
                                 || v.unit
                                     .address_name
-                                    .map(|u| name.as_ref().map(|n| n == &u.value.to_string()))
-                                    .flatten()
+                                    .and_then(|u| name.as_ref().map(|n| n == &u.value.to_string()))
                                     .unwrap_or_default()
                         });
 
