@@ -10,7 +10,11 @@ use itertools::Itertools;
 use move_trace_format::{format::MoveTraceBuilder, interface::Tracer};
 use move_vm_runtime::move_vm::MoveVM;
 use movy_sui::{compile::SuiCompiledPackage, database::cache::ObjectSuiStoreCommit};
-use movy_types::{error::MovyError, input::MoveAddress, object::MoveOwner};
+use movy_types::{
+    error::MovyError,
+    input::{MoveAddress, pprint_ptb},
+    object::MoveOwner,
+};
 use sui_adapter_latest::execution_mode::{ExecutionMode, Normal};
 use sui_move_natives_latest::all_natives;
 use sui_types::{
@@ -206,6 +210,15 @@ where
             None
         };
         trace!("Tx digest is {}", tx_data.digest());
+
+        match &tx_data.as_v1().kind {
+            TransactionKind::ProgrammableTransaction(ptb) => {
+                tracing::trace!("Ptb to execute:\n{}", pprint_ptb(ptb));
+            }
+            _ => {
+                tracing::trace!("Tx to execute: {}", &tx_data.as_v1().kind);
+            }
+        }
 
         let (store, gas_status, effects, _timing, result) =
             if let Some(target) = target_deployment_id {

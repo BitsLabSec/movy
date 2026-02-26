@@ -198,6 +198,12 @@ impl SuiFuzzArgs {
             gas_id.into(),
             very_big_gas(),
         )?;
+        env.mint_coin_id(
+            MoveTypeTag::from_str("0x2::sui::SUI").unwrap(),
+            MoveOwner::AddressOwner(self.roles.attacker),
+            gas_id.into(),
+            very_big_gas(),
+        )?;
         let testing_env = SuiTestingEnv::new(env.wrapped());
         testing_env.mock_testing_std()?;
         testing_env.install_movy()?;
@@ -221,8 +227,8 @@ impl SuiFuzzArgs {
             )
             .await?;
 
-        let mut abis = BTreeMap::new();
-        let mut testing_abis = BTreeMap::new();
+        let mut abis = movy_sui_stds::std_abi(true);
+        let mut testing_abis = movy_sui_stds::std_abi(false);
 
         for (testing_abi, abi, names) in local_abis {
             let testing_pkg = testing_abi.package_id;

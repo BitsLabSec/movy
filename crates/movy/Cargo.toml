@@ -27,3 +27,4 @@ movy-types = {workspace = true}
 movy-replay = {workspace = true}
 movy-analysis = {workspace = true}
 movy-static-analysis = {workspace = true}
+movy-sui-stds = {workspace = true}

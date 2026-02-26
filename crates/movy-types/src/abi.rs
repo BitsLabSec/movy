@@ -547,7 +547,7 @@ impl MoveAbiSignatureToken {
     }
 
     pub fn is_balance(&self) -> bool {
-        let MoveAbiSignatureToken::Struct(inner) = self else {
+        let MoveAbiSignatureToken::StructInstantiation(inner, _) = self else {
             return false;
         };
         inner.module_id.module_address == MoveAddress::two()
@@ -556,7 +556,7 @@ impl MoveAbiSignatureToken {
     }
 
     pub fn is_coin(&self) -> bool {
-        let MoveAbiSignatureToken::Struct(inner) = self else {
+        let MoveAbiSignatureToken::StructInstantiation(inner, _) = self else {
             return false;
         };
         inner.module_id.module_address == MoveAddress::two()

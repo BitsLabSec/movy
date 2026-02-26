@@ -9,6 +9,7 @@ repository.workspace = true
 
 [dependencies]
 movy-sui = {workspace = true}
+movy-types = {workspace = true}
 bcs.workspace = true
 
 [build-dependencies]

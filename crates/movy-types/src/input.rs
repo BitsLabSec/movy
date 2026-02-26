@@ -4,6 +4,7 @@ use std::{
 };
 
 use alloy_primitives::{B256, U128, U256};
+use itertools::Itertools;
 use move_core_types::{account_address::AccountAddress, language_storage::StructTag};
 use serde::{Deserialize, Serialize};
 use sui_types::{
@@ -11,7 +12,7 @@ use sui_types::{
     base_types::{ObjectID, ObjectRef, SequenceNumber, SuiAddress},
     programmable_transaction_builder::ProgrammableTransactionBuilder,
     transaction::{
-        Argument, Command, ObjectArg, ProgrammableMoveCall, ProgrammableTransaction,
+        Argument, CallArg, Command, ObjectArg, ProgrammableMoveCall, ProgrammableTransaction,
         SharedObjectMutability,
     },
     type_input::{StructInput, TypeInput},
@@ -708,7 +709,7 @@ impl Display for MoveSequenceCall {
     }
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, Hash)]
+#[derive(Debug, Clone, Serialize, Deserialize, Hash, Default)]
 pub struct MoveSequence {
     pub inputs: Vec<InputArgument>,
     pub commands: Vec<MoveSequenceCall>,
@@ -750,7 +751,7 @@ impl MoveSequence {
         Ok(v?)
     }
     pub fn to_ptb(&self) -> Result<ProgrammableTransaction, MovyError> {
-        let mut builder = ProgrammableTransactionBuilder::new();
+        let mut builder: ProgrammableTransactionBuilder = ProgrammableTransactionBuilder::new();
 
         for input in self.inputs.iter() {
             Self::sui_builder_input_arg(&mut builder, input)?;
@@ -798,6 +799,144 @@ impl MoveSequence {
 
         Ok(builder.finish())
     }
+}
+
+pub fn pprint_ptb(ptb: &ProgrammableTransaction) -> String {
+    let inputs = ptb
+        .inputs
+        .iter()
+        .map(|t| match t {
+            CallArg::Pure(x) => {
+                let v = if x.len() == 1 {
+                    u8::from_le_bytes(x.as_slice().try_into().unwrap()).to_string()
+                } else if x.len() == 2 {
+                    u16::from_le_bytes(x.as_slice().try_into().unwrap()).to_string()
+                } else if x.len() == 4 {
+                    u32::from_le_bytes(x.as_slice().try_into().unwrap()).to_string()
+                } else if x.len() == 8 {
+                    u64::from_le_bytes(x.as_slice().try_into().unwrap()).to_string()
+                } else if x.len() == 16 {
+                    u128::from_le_bytes(x.as_slice().try_into().unwrap()).to_string()
+                } else if x.len() == 32 {
+                    U256::from_le_slice(x.as_slice()).to_string()
+                } else {
+                    "...".to_string()
+                };
+                format!("Pure({}, guess={})", const_hex::encode(x), v)
+            }
+            CallArg::Object(obj) => match obj {
+                ObjectArg::ImmOrOwnedObject(imm) => format!("ImmOrOwnedObject({})", imm.0),
+                ObjectArg::Receiving(recv) => format!("Receiving({})", recv.0),
+                ObjectArg::SharedObject {
+                    id,
+                    initial_shared_version: _,
+                    mutability,
+                } => {
+                    if mutability.is_exclusive() {
+                        format!("Shared(&mut {})", id)
+                    } else {
+                        format!("Shared(&{})", id)
+                    }
+                }
+            },
+            CallArg::FundsWithdrawal(balance) => format!("BalanceWithdraw({:?})", balance),
+        })
+        .collect_vec();
+
+    let fmt_arg = |arg: &Argument| match arg {
+        Argument::Input(idx) => inputs
+            .get(*idx as usize)
+            .map(|v| format!("Input({}, {})", idx, v))
+            .unwrap_or_else(|| format!("Input({})", *idx)),
+        Argument::GasCoin => "GasCoin".to_string(),
+        Argument::NestedResult(m, n) => {
+            format!("NestedResult({}, {})", m, n)
+        }
+        Argument::Result(m) => {
+            format!("Result({})", m)
+        }
+    };
+
+    let fmt_arguments = |args: &[Argument]| args.iter().map(&fmt_arg).collect_vec();
+
+    let calls = ptb
+        .commands
+        .iter()
+        .map(|call| match call {
+            Command::MoveCall(mc) => {
+                let args = fmt_arguments(&mc.arguments);
+
+                format!(
+                    "{}:{}:{}{}({})",
+                    &mc.package,
+                    &mc.module,
+                    &mc.function,
+                    if mc.type_arguments.is_empty() {
+                        "".to_string()
+                    } else {
+                        format!(
+                            "<{}>",
+                            mc.type_arguments
+                                .iter()
+                                .map(|t| t.to_canonical_string(true))
+                                .join(",")
+                        )
+                    },
+                    args.into_iter().join(",")
+                )
+            }
+            Command::SplitCoins(src, dst) => {
+                let src = fmt_arg(src);
+                let dsts = fmt_arguments(dst);
+
+                format!("SplitCoins({}, [{}])", src, dsts.into_iter().join(","))
+            }
+            Command::TransferObjects(srcs, dst) => {
+                let dst = fmt_arg(dst);
+                let srcs = fmt_arguments(srcs);
+
+                format!("TransferObjects([{}], {})", srcs.into_iter().join(","), dst)
+            }
+            Command::MergeCoins(dst, srcs) => {
+                let dst = fmt_arg(dst);
+                let srcs = fmt_arguments(srcs);
+
+                format!("MergeCoins({}, [{}])", dst, srcs.into_iter().join(","))
+            }
+            Command::Publish(_, deps) => {
+                format!(
+                    "Publish(..., [{}])",
+                    deps.iter().map(|t| t.to_string()).join(",")
+                )
+            }
+            Command::MakeMoveVec(ty, srcs) => {
+                let srcs = fmt_arguments(srcs);
+                format!(
+                    "MakeMoveVec({}, [{}])",
+                    ty.as_ref()
+                        .map(|t| t.to_canonical_string(true))
+                        .unwrap_or_else(|| "None".to_string()),
+                    srcs.into_iter().join(",")
+                )
+            }
+            Command::Upgrade(_, deps, package, ticket) => {
+                let ticket = fmt_arg(ticket);
+
+                format!(
+                    "Upgrade(..., [{}], {}, {})",
+                    deps.iter().map(|v| v.to_string()).join(","),
+                    package,
+                    ticket
+                )
+            }
+        })
+        .collect_vec();
+
+    format!(
+        "Inputs:\n\t{}\nCommands:\n\t{}",
+        inputs.into_iter().join("\n\t"),
+        calls.into_iter().join("\n\t"),
+    )
 }
 
 impl Display for MoveSequence {
