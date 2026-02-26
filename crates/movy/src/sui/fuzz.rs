@@ -196,8 +196,15 @@ impl SuiFuzzArgs {
         let gas_id = ObjectID::random_from_rng(&mut rand);
         env.mint_coin_id(
             MoveTypeTag::from_str("0x2::sui::SUI").unwrap(),
-            MoveOwner::AddressOwner(self.deployer),
+            MoveOwner::AddressOwner(self.attacker),
             gas_id.into(),
+            100_000_000_000,
+        )?;
+        // Mint SUI to attacker for fuzzing
+        env.mint_coin_id(
+            MoveTypeTag::from_str("0x2::sui::SUI").unwrap(),
+            MoveOwner::AddressOwner(self.attacker),
+            ObjectID::random_from_rng(&mut rand).into(),
             100_000_000_000,
         )?;
         let testing_env = SuiTestingEnv::new(env);
@@ -217,8 +224,8 @@ impl SuiFuzzArgs {
                 &graphql,
             )
             .await?;
-        let mut abis = BTreeMap::new();
-        let mut testing_abis = BTreeMap::new();
+        let mut abis = testing_env.std_abi(false)?;
+        let mut testing_abis = testing_env.std_abi(true)?;
 
         for (testing_abi, abi, names) in local_abis {
             let testing_pkg = testing_abi.package_id;

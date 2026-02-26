@@ -21,12 +21,7 @@ use sui_types::storage::{BackingPackageStore, BackingStore, ObjectStore};
 
 #[derive(Args, Clone, Debug, Serialize, Deserialize)]
 pub struct SuiTargetArgs {
-    #[arg(
-        short,
-        long,
-        value_delimiter = ',',
-        help = "The onchain packages to add."
-    )]
+    #[arg(long, value_delimiter = ',', help = "The onchain packages to add.")]
     pub onchains: Option<Vec<MoveAddress>>,
     #[arg(
         long,

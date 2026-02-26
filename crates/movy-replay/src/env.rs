@@ -62,6 +62,20 @@ impl<
         Self { db }
     }
 
+    pub fn std_abi(&self, test: bool) -> Result<BTreeMap<MoveAddress, MovePackageAbi>, MovyError> {
+        let std = if test {
+            include_bytes!(concat!(env!("OUT_DIR"), "/std.testing")).to_vec()
+        } else {
+            include_bytes!(concat!(env!("OUT_DIR"), "/std")).to_vec()
+        };
+        let stds: Vec<SuiCompiledPackage> = serde_json::from_slice(&std)?;
+        let mut out = BTreeMap::new();
+        for std in stds {
+            out.insert(std.package_id.into(), std.abi()?);
+        }
+        Ok(out)
+    }
+
     pub fn install_std(&self, test: bool) -> Result<(), MovyError> {
         // This is pretty hacky but works
         let stds = if test {
@@ -164,6 +178,15 @@ impl<
                     gas,
                     None,
                 )?;
+                if results.effects.status().is_err() {
+                    let err = eyre!(
+                        "movy_init failed at {}: {:?}",
+                        md.module_id,
+                        results.effects.status()
+                    );
+                    log::warn!("{err}");
+                    continue;
+                }
                 log::info!("Commiting movy_init effects...");
                 log::debug!(
                     "Status: {:?} Changed Objects: {}, Removed Objects: {}",
