@@ -211,6 +211,7 @@ impl Metadata {
         for (addr, abi) in local_abis {
             abis.insert(addr, abi);
         }
+        abis.remove(&MoveAddress::from_str("0xa")?);
 
         // Map every module address back to its package id.
         let mut module_address_to_package = BTreeMap::new();
