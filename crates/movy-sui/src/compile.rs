@@ -1,10 +1,16 @@
-use std::{collections::BTreeSet, fmt::Display, io::Write, path::Path};
+use std::{
+    collections::BTreeSet,
+    fmt::Display,
+    io::Write,
+    path::{Path, PathBuf},
+};
 
 use color_eyre::eyre::eyre;
 use itertools::Itertools;
 use move_binary_format::CompiledModule;
 use move_compiler::{compiled_unit::NamedCompiledModule, editions::Flavor};
 use move_core_types::account_address::AccountAddress;
+use move_package_alt::RootPackage;
 use movy_types::{
     abi::{MOVY_INIT, MOVY_ORACLE, MovePackageAbi},
     error::MovyError,
@@ -12,13 +18,11 @@ use movy_types::{
 };
 use serde::{Deserialize, Serialize};
 use sui_move_build::{BuildConfig, CompiledPackage};
-use sui_types::base_types::ObjectID;
+use sui_package_alt::SuiFlavor;
+use sui_types::{base_types::ObjectID, is_system_package};
 use tracing::{debug, trace};
 
-pub fn build_package_resolved(
-    folder: &Path,
-    test_mode: bool,
-) -> Result<CompiledPackage, MovyError> {
+fn sui_build_config(test_mode: bool) -> BuildConfig {
     let mut cfg = move_package_alt_compilation::build_config::BuildConfig::default();
     cfg.default_flavor = Some(Flavor::Sui);
     cfg.test_mode = test_mode;
@@ -28,15 +32,61 @@ pub fn build_package_resolved(
     // We overrite this and request the behavior of the old version
     cfg.set_unpublished_deps_to_zero = true;
 
-    let cfg = BuildConfig {
+    BuildConfig {
         config: cfg,
         run_bytecode_verifier: false,
         print_diags_to_stderr: false,
         environment: sui_package_alt::mainnet_environment(),
-    };
+    }
+}
+
+fn load_root_package(folder: &Path, test_mode: bool) -> Result<RootPackage<SuiFlavor>, MovyError> {
+    let cfg = sui_build_config(test_mode);
+    cfg.config
+        .package_loader(folder, &cfg.environment)
+        .load_sync()
+        .map_err(|e| eyre!(e).into())
+}
+
+pub fn build_package_resolved(
+    folder: &Path,
+    test_mode: bool,
+) -> Result<CompiledPackage, MovyError> {
+    let cfg = sui_build_config(test_mode);
     trace!("Build config is {:?}", &cfg.config);
     // cfg.compile_package(path, writer) // reference
     Ok(cfg.build(folder)?)
+}
+
+pub fn resolve_local_dependency_paths(
+    folders: &[PathBuf],
+    test_mode: bool,
+) -> Result<Vec<PathBuf>, MovyError> {
+    let mut ordered = Vec::new();
+    let mut seen = BTreeSet::new();
+
+    for folder in folders {
+        let root_package = load_root_package(folder, test_mode)?;
+        let mut packages = root_package.sorted_packages();
+        packages.reverse();
+
+        for package in packages {
+            if package
+                .published()
+                .map(|addresses| is_system_package(ObjectID::from_address(addresses.original_id.0)))
+                .unwrap_or(false)
+            {
+                continue;
+            }
+
+            let path = std::fs::canonicalize(package.path().path())?;
+            if seen.insert(path.clone()) {
+                ordered.push(path);
+            }
+        }
+    }
+
+    Ok(ordered)
 }
 
 pub fn mock_module_address(address: ObjectID, module: &mut CompiledModule) {
@@ -507,7 +557,11 @@ impl SuiCompiledPackage {
 
 #[cfg(test)]
 mod test {
-    use std::path::PathBuf;
+    use std::{
+        fs,
+        path::{Path, PathBuf},
+        time::{SystemTime, UNIX_EPOCH},
+    };
 
     use crate::compile::SuiCompiledPackage;
 
@@ -539,5 +593,102 @@ public fun new<T: drop, V: drop>(ctx: &mut TxContext, t2: &Test<T, V>, t: &Test<
             true,
         )
         .unwrap();
+    }
+
+    fn unique_temp_dir() -> PathBuf {
+        let nonce = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        std::env::temp_dir().join(format!(
+            "movy-sui-compile-tests-{}-{}",
+            std::process::id(),
+            nonce
+        ))
+    }
+
+    fn write_move_package(path: &Path, name: &str, dependencies: &[(&str, &str)]) {
+        fs::create_dir_all(path.join("sources")).unwrap();
+
+        let mut manifest = format!(
+            r#"[package]
+name = "{name}"
+edition = "2024"
+
+[addresses]
+{name} = "0x0"
+"#
+        );
+
+        for (dep_name, local) in dependencies {
+            manifest.push_str(&format!(
+                "\n[dependencies.{dep_name}]\nlocal = \"{local}\"\n"
+            ));
+        }
+
+        fs::write(path.join("Move.toml"), manifest).unwrap();
+        fs::write(
+            path.join("sources").join(format!("{name}.move")),
+            format!("module {name}::{name};"),
+        )
+        .unwrap();
+    }
+
+    #[test]
+    fn resolves_local_dependency_paths_in_dependency_first_order() {
+        let root = unique_temp_dir();
+        let dep_a = root.join("dep_a");
+        let dep_b = root.join("dep_b");
+        let target = root.join("target");
+
+        write_move_package(&dep_a, "dep_a", &[]);
+        write_move_package(&dep_b, "dep_b", &[("dep_a", "../dep_a")]);
+        write_move_package(
+            &target,
+            "target",
+            &[("dep_b", "../dep_b"), ("dep_a", "../dep_a")],
+        );
+
+        let resolved =
+            crate::compile::resolve_local_dependency_paths(std::slice::from_ref(&target), true)
+                .unwrap();
+
+        assert_eq!(
+            resolved,
+            vec![
+                fs::canonicalize(dep_a).unwrap(),
+                fs::canonicalize(dep_b).unwrap(),
+                fs::canonicalize(target).unwrap(),
+            ]
+        );
+
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn deduplicates_shared_local_dependency_paths_across_roots() {
+        let root = unique_temp_dir();
+        let shared = root.join("shared");
+        let left = root.join("left");
+        let right = root.join("right");
+
+        write_move_package(&shared, "shared", &[]);
+        write_move_package(&left, "left", &[("shared", "../shared")]);
+        write_move_package(&right, "right", &[("shared", "../shared")]);
+
+        let resolved =
+            crate::compile::resolve_local_dependency_paths(&[left.clone(), right.clone()], true)
+                .unwrap();
+
+        assert_eq!(
+            resolved,
+            vec![
+                fs::canonicalize(shared).unwrap(),
+                fs::canonicalize(left).unwrap(),
+                fs::canonicalize(right).unwrap(),
+            ]
+        );
+
+        fs::remove_dir_all(root).unwrap();
     }
 }

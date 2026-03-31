@@ -1,4 +1,8 @@
-use std::{collections::BTreeMap, fmt::Display, path::PathBuf};
+use std::{
+    collections::{BTreeMap, BTreeSet},
+    fmt::Display,
+    path::PathBuf,
+};
 
 use clap::Args;
 use color_eyre::eyre::eyre;
@@ -9,7 +13,7 @@ use movy_replay::{
     env::SuiTestingEnv,
 };
 use movy_sui::{
-    compile::SuiCompiledPackage,
+    compile::{SuiCompiledPackage, resolve_local_dependency_paths},
     database::{cache::ObjectSuiStoreCommit, graphql::GraphQlDatabase},
 };
 use movy_types::{
@@ -74,8 +78,10 @@ impl SuiTargetArgs {
     pub fn local_abis(&self, test_mode: bool) -> Result<Vec<MovePackageAbi>, MovyError> {
         let mut out = vec![];
 
-        for local in self.locals.iter().flatten() {
-            let package = SuiCompiledPackage::build_all_unpublished_from_folder(local, test_mode)?;
+        let resolved_locals =
+            resolve_local_dependency_paths(self.locals.as_deref().unwrap_or_default(), test_mode)?;
+        for local in resolved_locals {
+            let package = SuiCompiledPackage::build_all_unpublished_from_folder(&local, test_mode)?;
             out.push(package.abi()?);
         }
         Ok(out)
@@ -103,6 +109,14 @@ impl SuiTargetArgs {
     {
         let mut target_packages = Vec::new();
         let mut local_name_map = BTreeMap::new();
+        let explicit_locals = self
+            .locals
+            .iter()
+            .flatten()
+            .map(std::fs::canonicalize)
+            .collect::<Result<BTreeSet<_>, _>>()?;
+        let resolved_locals =
+            resolve_local_dependency_paths(self.locals.as_deref().unwrap_or_default(), true)?;
 
         for onchain in self.onchains.iter().flatten() {
             env.fetch_package_at_address(*onchain, rpc).await?;
@@ -118,12 +132,23 @@ impl SuiTargetArgs {
         tracing::info!("Loading inner types...");
         env.load_inner_types().await?;
 
+        if !resolved_locals.is_empty() {
+            tracing::info!(
+                "Resolved local deployment order: {}",
+                resolved_locals
+                    .iter()
+                    .map(|path| path.display().to_string())
+                    .join(" -> ")
+            );
+        }
+
         let mut local_abis = vec![];
-        for local in self.locals.iter().flatten() {
+        for local in resolved_locals.iter() {
+            let is_explicit_target = explicit_locals.contains(local);
             tracing::info!("Deploying the local package at {}", local.display());
             let (target_package, testing_abi, abi, package_names) = env
                 .load_local(
-                    local,
+                    local.as_path(),
                     deployer,
                     attacker,
                     epoch,
@@ -139,8 +164,10 @@ impl SuiTargetArgs {
             for name in package_names.iter() {
                 local_name_map.insert(name.clone(), target_package);
             }
-            local_abis.push((testing_abi, abi, package_names));
-            target_packages.push(target_package);
+            if is_explicit_target {
+                local_abis.push((testing_abi, abi, package_names));
+                target_packages.push(target_package);
+            }
         }
 
         tracing::info!("Reload inner types...");
