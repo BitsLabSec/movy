@@ -234,7 +234,15 @@ where
         match balance_change {
             Some(bc) => {
                 debug!("Balance change: {:?}", bc);
-                if bc.iter().all(|c| c.amount >= 0) && bc.iter().any(|c| c.amount > 0) {
+                let has_positive = bc.iter().any(|c| c.amount > 0);
+                let has_negative = bc.iter().any(|c| c.amount < 0);
+                if has_positive && has_negative {
+                    debug!(
+                        "Skipping proceeds finding because balance changes contain both profits and costs: {:?}",
+                        bc
+                    );
+                }
+                if bc.iter().all(|c| c.amount >= 0) && has_positive {
                     debug!("Found proceeds: {:?}", bc);
                     let finding = OracleFinding {
                         oracle: "ProceedsOracle".to_string(),

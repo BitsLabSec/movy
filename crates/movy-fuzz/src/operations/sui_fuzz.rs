@@ -51,7 +51,8 @@ where
         CouldDisabledOralce::new(TypeConversionOracle, disable_defects_oracle),
         CouldDisabledOralce::new(OverflowOracle, disable_defects_oracle),
         CouldDisabledOralce::new(ProceedsOracle::default(), disable_profit_oracle),
-        CouldDisabledOralce::new(TypedBugOracle::new(typed_bug_abort), disable_defects_oracle),
+        // Keep typed-bug detection enabled even when generic defect oracles are muted.
+        CouldDisabledOralce::new(TypedBugOracle::new(typed_bug_abort), false),
     )
 }
 
@@ -84,11 +85,8 @@ where
         AppendOutcomeFeedback {},
         coverage_feedback
     );
-    let mut crash_feedback = feedback_and_fast!(
-        CrashFeedback::new(),
-        AppendOutcomeFeedback {},
-        MaxMapPow2Feedback::with_name("crash-fb", &code_observer)
-    );
+    let mut crash_feedback =
+        feedback_and_fast!(CrashFeedback::new(), AppendOutcomeFeedback {});
 
     let corpus = if let Some(output) = output {
         let corpus = output.join("queue");
@@ -224,8 +222,18 @@ where
         }
 
         if let Err(e) = fuzzer.fuzz_one(&mut stages, &mut executor, &mut state, &mut mgr) {
-            warn!("Getting fuzz error: {:?}", e);
-            break;
+            match e {
+                libafl::Error::InvalidCorpus(msg, _) => {
+                    warn!("Skipping invalid corpus testcase: {}", msg);
+                    cycle += 1;
+                    mgr.report_progress(&mut state)?;
+                    continue;
+                }
+                other => {
+                    warn!("Getting fuzz error: {:?}", other);
+                    break;
+                }
+            }
         }
 
         // Clear per-round execution outcome to avoid leaking stage indices into the next round.

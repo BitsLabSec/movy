@@ -5,12 +5,18 @@ use std::{
     path::{Path, PathBuf},
 };
 
+use anyhow::anyhow;
 use color_eyre::eyre::eyre;
 use itertools::Itertools;
 use move_binary_format::CompiledModule;
-use move_compiler::{compiled_unit::NamedCompiledModule, editions::Flavor};
+use move_compiler::{
+    compiled_unit::NamedCompiledModule,
+    diagnostics::report_diagnostics_to_buffer,
+    editions::Flavor,
+};
 use move_core_types::account_address::AccountAddress;
 use move_package_alt::RootPackage;
+use move_package_alt_compilation::build_plan::BuildPlan;
 use movy_types::{
     abi::{MOVY_INIT, MOVY_ORACLE, MovePackageAbi},
     error::MovyError,
@@ -54,8 +60,60 @@ pub fn build_package_resolved(
 ) -> Result<CompiledPackage, MovyError> {
     let cfg = sui_build_config(test_mode);
     trace!("Build config is {:?}", &cfg.config);
-    // cfg.compile_package(path, writer) // reference
-    Ok(cfg.build(folder)?)
+    match cfg.build(folder) {
+        Ok(package) => Ok(package),
+        Err(err) => {
+            if let Ok(Some(rendered)) = render_compilation_diagnostics(folder, test_mode) {
+                return Err(eyre!(rendered).into());
+            }
+            Err(err.into())
+        }
+    }
+}
+
+fn render_compilation_diagnostics(
+    folder: &Path,
+    test_mode: bool,
+) -> Result<Option<String>, MovyError> {
+    let cfg = sui_build_config(test_mode);
+    let mut root_pkg: RootPackage<SuiFlavor> = cfg
+        .config
+        .package_loader(folder, &cfg.environment)
+        .load_sync()
+        .map_err(|e| eyre!(e))?;
+    let mut config = cfg.config.clone();
+    if config.default_flavor.is_none() {
+        config.default_flavor = Some(Flavor::Sui);
+    }
+    let build_plan = BuildPlan::create(&mut root_pkg, &config).map_err(|e| eyre!(e))?;
+    let mut sink = std::io::sink();
+    let result = build_plan.compile_with_driver(&mut sink, |compiler| {
+        let (files, units_res) = compiler.build()?;
+        match units_res {
+            Ok((units, _warning_diags)) => Ok((files, units)),
+            Err(error_diags) => {
+                let diags_buf =
+                    report_diagnostics_to_buffer(&files, error_diags, /* color */ true);
+                let rendered = String::from_utf8_lossy(&diags_buf).trim().to_string();
+                Err(anyhow!(if rendered.is_empty() {
+                    "Compilation error".to_string()
+                } else {
+                    rendered
+                }))
+            }
+        }
+    });
+    match result {
+        Ok(_) => Ok(None),
+        Err(err) => {
+            let rendered = err.to_string();
+            if rendered.trim().is_empty() || rendered.trim() == "Compilation error" {
+                Ok(None)
+            } else {
+                Ok(Some(rendered))
+            }
+        }
+    }
 }
 
 pub fn resolve_local_dependency_paths(

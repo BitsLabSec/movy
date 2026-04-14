@@ -36,6 +36,18 @@ impl<S> SuiGeneralOracle<S> for PrecisionLossOracle {
             }
             _ => false,
         };
+        if matches!(instruction, move_binary_format::file_format::Bytecode::Mul)
+            && ["flash_loan", "full_math_u64"]
+                .iter()
+                .any(|needle| current_function.to_string().contains(needle))
+        {
+            tracing::info!(
+                "precision oracle saw Mul in {} at pc {}: contains_division={}",
+                current_function,
+                pc,
+                loss
+            );
+        }
         if loss {
             let info = json!({
                 "oracle": "PrecisionLossOracle",

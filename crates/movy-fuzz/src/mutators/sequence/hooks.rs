@@ -174,11 +174,18 @@ fn append_hook_call<S>(
                 );
                 return;
             }
-            let arg = target_call
-                .arguments
-                .get(i)
-                .cloned()
-                .unwrap_or(SequenceArgument::Input(0));
+            if target_param.is_tx_context() {
+                // TxContext is injected by the executor; mirroring it as an explicit hook argument
+                // makes the generated pre/post hook call one argument too long.
+                continue;
+            }
+            let Some(arg) = target_call.arguments.get(i).cloned() else {
+                warn!(
+                    "skip hook {} due to missing target argument at {}",
+                    hook_ident, i
+                );
+                return;
+            };
             fixed_args.insert((param_offset + i) as u16, (arg, hook_ty));
         }
     }

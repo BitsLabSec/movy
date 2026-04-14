@@ -3,9 +3,12 @@ use std::{
     fmt::Display,
 };
 
-use movy_types::abi::{
-    MoveAbiSignatureToken, MoveFunctionAbi, MoveFunctionVisibility, MoveModuleAbi, MoveModuleId,
-    MovePackageAbi,
+use movy_types::{
+    abi::{
+        MoveAbiSignatureToken, MoveFunctionAbi, MoveFunctionVisibility, MoveModuleAbi,
+        MoveModuleId, MovePackageAbi,
+    },
+    input::MoveAddress,
 };
 use petgraph::{graph::NodeIndex, visit::EdgeRef};
 use serde::{Deserialize, Serialize};
@@ -154,7 +157,9 @@ impl MoveTypeGraph {
         &self,
         ty: &MoveAbiSignatureToken,
         public_only: bool,
+        excluded: Option<(&MoveAddress, &str, &str)>,
     ) -> Vec<(MoveModuleId, MoveFunctionAbi)> {
+        let ty = ty.dereference().map(|inner| inner.as_ref()).unwrap_or(ty);
         let mut producers = vec![];
         for (graph_ty, node) in self.tys.iter() {
             if let TypeGraphNode::Type(t) = graph_ty
@@ -166,6 +171,18 @@ impl MoveTypeGraph {
                 {
                     if let TypeGraphNode::Function(m, f) = &self.graph[edge.source()] {
                         if public_only && f.visibility != MoveFunctionVisibility::Public {
+                            continue;
+                        }
+                        if excluded.is_some_and(
+                            |(excluded_addr, excluded_module, excluded_name)| {
+                                &m.module_address == excluded_addr
+                                    && m.module_name == excluded_module
+                                    && f.name == excluded_name
+                            },
+                        ) {
+                            continue;
+                        }
+                        if !producer_allowed(m, f) {
                             continue;
                         }
                         producers.push((m.clone(), f.clone()));
@@ -186,4 +203,22 @@ impl MoveTypeGraph {
             idx
         }
     }
+}
+
+fn producer_allowed(module_id: &MoveModuleId, function: &MoveFunctionAbi) -> bool {
+    let addr = module_id.module_address;
+    let module = module_id.module_name.as_str();
+    let name = function.name.as_str();
+    let is_stdlib = addr == MoveAddress::one();
+    let is_sui = addr == MoveAddress::two();
+    let is_other_sui_std = addr.is_sui_std() && !is_stdlib && !is_sui;
+    if !is_stdlib && !is_sui && !is_other_sui_std {
+        return true;
+    }
+
+    (addr == MoveAddress::two() && module == "coin" && name == "into_balance")
+        || (addr == MoveAddress::one() && module == "ascii" && name == "string")
+        || (addr == MoveAddress::one() && module == "string" && name == "utf8")
+        || (addr == MoveAddress::one() && module == "uq32_32" && name == "from_quotient")
+        || (addr == MoveAddress::one() && module == "uq64_64" && name == "from_quotient")
 }

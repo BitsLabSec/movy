@@ -3,7 +3,7 @@ use std::{collections::BTreeMap, path::PathBuf, str::FromStr, sync::Arc};
 use clap::Args;
 use color_eyre::eyre::eyre;
 use movy_fuzz::{
-    meta::{FuzzMetadata, TargetFilters},
+    meta::{FuzzFunctionScore, FuzzMetadata, TargetFilters},
     operations::sui_fuzz,
 };
 use movy_replay::{
@@ -72,6 +72,20 @@ fn resolve_functions(
                 .collect::<Result<Vec<_>, MovyError>>()
         })
         .transpose()
+}
+
+fn resolve_function_scores(
+    funcs: &Option<Vec<crate::sui::env::PrivilegeFunctionScoreSelector>>,
+    local_name_map: &BTreeMap<String, MoveAddress>,
+) -> Result<Vec<FuzzFunctionScore>, MovyError> {
+    funcs.as_ref()
+        .map(|list| {
+            list.iter()
+                .map(|f| f.resolve(local_name_map))
+                .collect::<Result<Vec<_>, _>>()
+        })
+        .transpose()
+        .map(|scores| scores.unwrap_or_default())
 }
 
 fn resolve_type_tag(
@@ -272,7 +286,7 @@ impl SuiFuzzArgs {
         let meta = FuzzMetadata::from_env(
             &testing_env,
             rand,
-            self.filters.privilege_functions.unwrap_or_default(),
+            resolve_function_scores(&self.filters.privilege_functions, &local_name_map)?,
             target_packages,
             self.roles.attacker,
             self.roles.deployer,

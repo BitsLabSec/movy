@@ -1,5 +1,6 @@
 use std::{
     collections::{BTreeMap, BTreeSet},
+    fmt::Write as _,
     path::Path,
     str::FromStr,
 };
@@ -13,19 +14,22 @@ use movy_sui::{
     rpc::graphql::{GraphQlClient, OwnerKind},
 };
 use movy_types::{
-    abi::{MOVY_INIT, MovePackageAbi},
+    abi::{MOVY_INIT, MoveAbiSignatureToken, MoveFunctionAbi, MovePackageAbi},
     error::MovyError,
-    input::{MoveAddress, MoveStructTag},
+    input::{MoveAddress, MoveStructTag, MoveTypeTag},
+    object::{MoveObjectInfo, MoveOwner},
 };
 use sui_types::{
     Identifier,
     base_types::{ObjectID, SequenceNumber},
     digests::TransactionDigest,
     effects::TransactionEffectsAPI,
+    execution_status::ExecutionStatus,
     move_package::MovePackage,
     object::{Data, Object},
     programmable_transaction_builder::ProgrammableTransactionBuilder,
     storage::{BackingPackageStore, BackingStore, ObjectStore},
+    transaction::{ObjectArg, SharedObjectMutability},
 };
 
 use crate::{
@@ -38,6 +42,122 @@ pub struct SuiTestingEnv<T> {
     db: T,
 }
 
+fn format_movy_init_failure(status: &ExecutionStatus, trace: Option<&str>) -> String {
+    let mut out = String::new();
+    match status {
+        ExecutionStatus::Success => out.push_str("status: success"),
+        ExecutionStatus::Failure { error, command } => {
+            if let Some(command) = command {
+                let _ = writeln!(out, "command: {command}");
+            }
+            let _ = write!(out, "error: {error}");
+        }
+    }
+    if let Some(trace) = trace.filter(|trace| !trace.trim().is_empty()) {
+        let _ = write!(out, "\n{trace}");
+    }
+    out
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum MovyInitObjectMode {
+    OwnedValue,
+    ImmutableRef,
+    MutableRef,
+}
+
+fn movy_init_param_ty_and_mode(
+    param: &MoveAbiSignatureToken,
+) -> Option<(MoveTypeTag, MovyInitObjectMode)> {
+    match param {
+        MoveAbiSignatureToken::Struct { .. } | MoveAbiSignatureToken::StructInstantiation(_, _) => {
+            Some((
+                param.subst(&BTreeMap::new())?,
+                MovyInitObjectMode::OwnedValue,
+            ))
+        }
+        MoveAbiSignatureToken::Reference(inner) => Some((
+            inner.subst(&BTreeMap::new())?,
+            MovyInitObjectMode::ImmutableRef,
+        )),
+        MoveAbiSignatureToken::MutableReference(inner) => Some((
+            inner.subst(&BTreeMap::new())?,
+            MovyInitObjectMode::MutableRef,
+        )),
+        _ => None,
+    }
+}
+
+fn movy_init_object_arg_for_param(
+    param: &MoveAbiSignatureToken,
+    deployer: MoveAddress,
+    objects: &[MoveObjectInfo],
+    used_ids: &BTreeSet<MoveAddress>,
+) -> Result<(MoveObjectInfo, ObjectArg), MovyError> {
+    let Some((expected_ty, mode)) = movy_init_param_ty_and_mode(param) else {
+        return Err(eyre!("unsupported movy_init parameter type: {}", param).into());
+    };
+
+    let object = objects
+        .iter()
+        .find(|object| {
+            if used_ids.contains(&object.id) || object.ty != expected_ty {
+                return false;
+            }
+            match (&object.owner, mode) {
+                (MoveOwner::AddressOwner(owner), _) => *owner == deployer,
+                (MoveOwner::Immutable, MovyInitObjectMode::ImmutableRef) => true,
+                (MoveOwner::Shared { .. }, MovyInitObjectMode::ImmutableRef) => true,
+                (MoveOwner::Shared { .. }, MovyInitObjectMode::MutableRef) => true,
+                _ => false,
+            }
+        })
+        .cloned()
+        .ok_or_else(|| {
+            eyre!(
+                "unable to find a DB object for movy_init parameter {}",
+                param
+            )
+        })?;
+
+    let object_arg = match (&object.owner, mode) {
+        (MoveOwner::AddressOwner(_), _)
+        | (MoveOwner::Immutable, MovyInitObjectMode::ImmutableRef) => {
+            ObjectArg::ImmOrOwnedObject(object.sui_reference())
+        }
+        (
+            MoveOwner::Shared {
+                initial_shared_version,
+            },
+            MovyInitObjectMode::ImmutableRef,
+        ) => ObjectArg::SharedObject {
+            id: object.id.into(),
+            initial_shared_version: (*initial_shared_version).into(),
+            mutability: SharedObjectMutability::Immutable,
+        },
+        (
+            MoveOwner::Shared {
+                initial_shared_version,
+            },
+            MovyInitObjectMode::MutableRef,
+        ) => ObjectArg::SharedObject {
+            id: object.id.into(),
+            initial_shared_version: (*initial_shared_version).into(),
+            mutability: SharedObjectMutability::Mutable,
+        },
+        _ => {
+            return Err(eyre!(
+                "unsupported owner {:?} for movy_init parameter {}",
+                object.owner,
+                param
+            )
+            .into());
+        }
+    };
+
+    Ok((object, object_arg))
+}
+
 impl<T> SuiTestingEnv<T> {
     pub fn inner(&self) -> &T {
         &self.db
@@ -48,6 +168,125 @@ impl<T> SuiTestingEnv<T> {
     }
     pub fn into_inner(self) -> T {
         self.db
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use movy_types::{
+        abi::{MoveAbility, MoveModuleId, MoveStructHandle},
+        input::MoveStructTag,
+    };
+    use sui_types::{digests::ObjectDigest, transaction::SharedObjectMutability};
+
+    use super::*;
+
+    fn test_struct_handle(address: MoveAddress, module: &str, name: &str) -> MoveStructHandle {
+        MoveStructHandle {
+            module_id: MoveModuleId {
+                module_address: address,
+                module_name: module.to_string(),
+            },
+            struct_name: name.to_string(),
+            abilities: MoveAbility::empty(),
+            type_parameters: vec![],
+        }
+    }
+
+    fn test_struct_tag(address: MoveAddress, module: &str, name: &str) -> MoveTypeTag {
+        MoveTypeTag::Struct(MoveStructTag {
+            address,
+            module: module.to_string(),
+            name: name.to_string(),
+            tys: vec![],
+        })
+    }
+
+    fn test_object_info(id: MoveAddress, ty: MoveTypeTag, owner: MoveOwner) -> MoveObjectInfo {
+        MoveObjectInfo {
+            id,
+            ty,
+            owner,
+            version: 7,
+            digest: ObjectDigest::random().into(),
+        }
+    }
+
+    #[test]
+    fn selects_shared_mutable_ref_for_movy_init() {
+        let deployer = MoveAddress::random();
+        let handle = test_struct_handle(MoveAddress::random(), "vault_config", "GlobalConfig");
+        let param = MoveAbiSignatureToken::MutableReference(Box::new(
+            MoveAbiSignatureToken::Struct(handle.clone()),
+        ));
+        let object = test_object_info(
+            MoveAddress::random(),
+            test_struct_tag(
+                handle.module_id.module_address,
+                &handle.module_id.module_name,
+                &handle.struct_name,
+            ),
+            MoveOwner::Shared {
+                initial_shared_version: 11,
+            },
+        );
+
+        let (_object, arg) =
+            movy_init_object_arg_for_param(&param, deployer, &[object.clone()], &BTreeSet::new())
+                .unwrap();
+
+        assert_eq!(
+            arg,
+            ObjectArg::SharedObject {
+                id: object.id.into(),
+                initial_shared_version: 11.into(),
+                mutability: SharedObjectMutability::Mutable,
+            }
+        );
+    }
+
+    #[test]
+    fn selects_deployer_owned_value_for_movy_init() {
+        let deployer = MoveAddress::random();
+        let handle = test_struct_handle(MoveAddress::random(), "gauge_cap", "CreateCap");
+        let param = MoveAbiSignatureToken::Struct(handle.clone());
+        let object = test_object_info(
+            MoveAddress::random(),
+            test_struct_tag(
+                handle.module_id.module_address,
+                &handle.module_id.module_name,
+                &handle.struct_name,
+            ),
+            MoveOwner::AddressOwner(deployer),
+        );
+
+        let (_object, arg) =
+            movy_init_object_arg_for_param(&param, deployer, &[object.clone()], &BTreeSet::new())
+                .unwrap();
+
+        assert_eq!(arg, ObjectArg::ImmOrOwnedObject(object.sui_reference()));
+    }
+
+    #[test]
+    fn rejects_immutable_object_for_mutable_ref() {
+        let deployer = MoveAddress::random();
+        let handle = test_struct_handle(MoveAddress::random(), "config", "GlobalConfig");
+        let param = MoveAbiSignatureToken::MutableReference(Box::new(
+            MoveAbiSignatureToken::Struct(handle.clone()),
+        ));
+        let object = test_object_info(
+            MoveAddress::random(),
+            test_struct_tag(
+                handle.module_id.module_address,
+                &handle.module_id.module_name,
+                &handle.struct_name,
+            ),
+            MoveOwner::Immutable,
+        );
+
+        let err = movy_init_object_arg_for_param(&param, deployer, &[object], &BTreeSet::new())
+            .unwrap_err();
+        assert!(err.to_string().contains("unable to find a DB object"));
     }
 }
 
@@ -64,6 +303,39 @@ impl<
 {
     pub fn new(db: T) -> Self {
         Self { db }
+    }
+
+    async fn build_movy_init_args(
+        &self,
+        builder: &mut ProgrammableTransactionBuilder,
+        init: &MoveFunctionAbi,
+        deployer: MoveAddress,
+        attacker: MoveAddress,
+    ) -> Result<Vec<sui_types::transaction::Argument>, MovyError> {
+        let objects = self
+            .db
+            .list_objects()
+            .await?
+            .into_iter()
+            .filter_map(|id| self.db.get_move_object_info(id).ok())
+            .collect::<Vec<_>>();
+        let mut used_ids = BTreeSet::new();
+        let mut args = Vec::with_capacity(init.parameters.len());
+
+        for (idx, param) in init.parameters.iter().enumerate() {
+            match idx {
+                0 => args.push(builder.pure(ObjectID::from(deployer))?),
+                1 => args.push(builder.pure(ObjectID::from(attacker))?),
+                _ => {
+                    let (object, object_arg) =
+                        movy_init_object_arg_for_param(param, deployer, &objects, &used_ids)?;
+                    used_ids.insert(object.id);
+                    args.push(builder.obj(object_arg)?);
+                }
+            }
+        }
+
+        Ok(args)
     }
 
     pub fn install_movy(&self) -> Result<(), MovyError> {
@@ -300,22 +572,21 @@ impl<
                 && let Some(init) = md.locate_movy_init()
             {
                 let mut builder = ProgrammableTransactionBuilder::new();
-                let deployer_arg = builder.pure(ObjectID::from(deployer))?;
-                let attacker_arg = builder.pure(ObjectID::from(attacker))?;
+                let args = self
+                    .build_movy_init_args(&mut builder, init, deployer, attacker)
+                    .await?;
                 builder.programmable_move_call(
                     address,
                     Identifier::from_str(&md.module_id.module_name).unwrap(),
                     Identifier::from_str(&init.name).unwrap(),
                     vec![],
-                    vec![deployer_arg, attacker_arg],
+                    args,
                 );
                 let ptb = builder.finish();
                 tracing::info!("Detected a {} at: {}", MOVY_INIT, md.module_id);
-                let tracer = if trace_movy_init {
-                    Some(TreeTracer::new())
-                } else {
-                    None
-                };
+                // Always capture movy_init traces so failures surface detailed traces even when
+                // verbose tracing is disabled.
+                let tracer = Some(TreeTracer::new());
                 let mut results = executor.run_ptb_with_movy_tracer_gas(
                     ptb,
                     epoch,
@@ -324,18 +595,19 @@ impl<
                     gas,
                     tracer,
                 )?;
-                let trace =
-                    std::mem::take(&mut results.tracer).map(|tracer| tracer.take_inner().pprint());
+                let trace = std::mem::take(&mut results.tracer)
+                    .map(|tracer| tracer.take_inner().pprint_failure_views());
                 if !results.effects.status().is_ok() {
-                    if let Some(trace) = trace {
-                        tracing::error!("movy_init reverts with:\n{}", trace);
-                    }
-                    return Err(eyre!("movy_init reverts!").into());
+                    let details =
+                        format_movy_init_failure(results.effects.status(), trace.as_deref());
+                    return Err(eyre!("movy_init reverts!\n{}", details).into());
                 }
-                tracing::trace!(
-                    "movy_init trace:\n{}",
-                    trace.unwrap_or_else(|| "-".to_string())
-                );
+                if trace_movy_init {
+                    tracing::trace!(
+                        "movy_init trace:\n{}",
+                        trace.unwrap_or_else(|| "-".to_string())
+                    );
+                }
                 tracing::info!("Commiting movy_init effects...");
                 tracing::debug!(
                     "Status: {:?} Changed Objects: {}, Removed Objects: {}",
