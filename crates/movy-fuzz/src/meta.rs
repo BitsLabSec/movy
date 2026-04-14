@@ -188,9 +188,9 @@ fn normalize_packages(
     packages
 }
 
-fn should_skip_function(base: &Metadata, func_data: &MoveFunctionAbi) -> bool {
+fn skip_function_reason(base: &Metadata, func_data: &MoveFunctionAbi) -> Option<String> {
     if func_data.visibility != MoveFunctionVisibility::Public {
-        return true; // skip non-public functions
+        return Some("non-public visibility".to_string());
     }
 
     if func_data.parameters.iter().all(|t| {
@@ -203,26 +203,27 @@ fn should_skip_function(base: &Metadata, func_data: &MoveFunctionAbi) -> bool {
         .all(|t| t.is_mutable() || t.ability().is_some_and(|a| a.contains(MoveAbility::DROP)))
     {
         // skip read-only functions
-        return true;
+        return Some("read-only signature".to_string());
     }
 
     for ret_ty in func_data.return_paramters.iter() {
-        let self_used = func_data
-            .parameters
-            .iter()
-            .any(|t| t == ret_ty || t.dereference().is_some_and(|r| r.as_ref() == ret_ty));
         let ret_ref = matches!(
             ret_ty,
             MoveAbiSignatureToken::Reference(_) | MoveAbiSignatureToken::MutableReference(_)
         );
         let hanging_hot_potato =
             ret_ty.is_hot_potato() && base.type_graph.find_consumers(ret_ty, true).is_empty();
-        if self_used || ret_ref || hanging_hot_potato {
-            return true;
+        if ret_ref || hanging_hot_potato {
+            let reason = if ret_ref {
+                format!("returns a reference: {}", ret_ty)
+            } else {
+                format!("returns an unconsumable hot potato: {}", ret_ty)
+            };
+            return Some(reason);
         }
     }
 
-    false
+    None
 }
 
 fn collect_target_functions(
@@ -237,7 +238,14 @@ fn collect_target_functions(
         };
         for module in package_meta.modules.iter() {
             for func_data in module.functions.iter() {
-                if should_skip_function(base, func_data) {
+                if let Some(reason) = skip_function_reason(base, func_data) {
+                    debug!(
+                        "Skipping function {}::{}::{} because {}",
+                        package_addr.to_canonical_string(true),
+                        module.module_id.module_name,
+                        func_data.name,
+                        reason
+                    );
                     continue;
                 }
                 let func_ident = FunctionIdent::new(
@@ -254,12 +262,80 @@ fn collect_target_functions(
     target_functions
 }
 
+fn collect_testing_target_functions(
+    base: &Metadata,
+    target_packages: &[MoveAddress],
+) -> Vec<FunctionIdent> {
+    let mut target_functions: Vec<FunctionIdent> = vec![];
+
+    for package_addr in target_packages.iter() {
+        let Some(package_meta) = base.get_package_metadata(package_addr) else {
+            continue;
+        };
+        for module in package_meta.modules.iter() {
+            for func_data in module.functions.iter() {
+                if let Some(reason) = skip_function_reason(base, func_data) {
+                    debug!(
+                        "Skipping testing function {}::{}::{} because {}",
+                        package_addr.to_canonical_string(true),
+                        module.module_id.module_name,
+                        func_data.name,
+                        reason
+                    );
+                    continue;
+                }
+                let func_ident = FunctionIdent::new(
+                    package_addr,
+                    &module.module_id.module_name,
+                    &func_data.name,
+                );
+                debug!("Re-analyzing testing function: {:?}", &func_ident);
+                target_functions.push(func_ident);
+            }
+        }
+    }
+
+    target_functions
+}
+
+fn collect_validation_target_functions(
+    base: &Metadata,
+    target_packages: &[MoveAddress],
+) -> Vec<FunctionIdent> {
+    let mut target_functions: Vec<FunctionIdent> = vec![];
+
+    for package_addr in target_packages.iter() {
+        let Some(package_meta) = base.get_package_metadata(package_addr) else {
+            continue;
+        };
+        for module in package_meta.modules.iter() {
+            for func_data in module.functions.iter() {
+                if func_data.visibility != MoveFunctionVisibility::Public
+                    || !func_data.name.starts_with("movy_validate")
+                {
+                    continue;
+                }
+                let func_ident = FunctionIdent::new(
+                    package_addr,
+                    &module.module_id.module_name,
+                    &func_data.name,
+                );
+                debug!("Including validation wrapper target by default: {:?}", &func_ident);
+                target_functions.push(func_ident);
+            }
+        }
+    }
+
+    target_functions
+}
+
 fn fallback_target_functions(
     base: &Metadata,
     target_packages: &[MoveAddress],
 ) -> Vec<FunctionIdent> {
     base.abis
         .iter()
+        .chain(base.testing_abis.iter())
         .filter(|(package_addr, _)| target_packages.contains(package_addr))
         .flat_map(|(package_addr, package_meta)| {
             package_meta.modules.iter().flat_map(move |module_data| {
@@ -587,7 +663,17 @@ impl FuzzMetadata {
 
         let filtered_packages = normalize_packages(target_packages, &filters);
         let mut target_functions = collect_target_functions(&base, &filtered_packages);
+        target_functions.extend(collect_validation_target_functions(&base, &filtered_packages));
         target_functions = apply_function_filters(target_functions, &filters);
+        target_functions.sort();
+        target_functions.dedup();
+        if target_functions.is_empty() {
+            target_functions = collect_testing_target_functions(&base, &filtered_packages);
+            target_functions.extend(collect_validation_target_functions(&base, &filtered_packages));
+            target_functions = apply_function_filters(target_functions, &filters);
+            target_functions.sort();
+            target_functions.dedup();
+        }
         if target_functions.is_empty() {
             // if no all functions excluded, use all functions
             target_functions = fallback_target_functions(&base, &filtered_packages);

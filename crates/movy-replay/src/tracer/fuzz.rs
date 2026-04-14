@@ -432,6 +432,9 @@ where
             &frame.function_name
         );
         tracing::debug!("Entering {}", &package);
+        if frame.function_name.contains("flash_loan") {
+            tracing::info!("entering flash-loan frame {}", package);
+        }
         self.current_functions.push((
             frame.version_id.into(),
             FunctionIdent::new(

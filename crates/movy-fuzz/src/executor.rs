@@ -28,7 +28,7 @@ use sui_types::{
     execution_status::ExecutionStatus,
     storage::{BackingStore, ObjectStore},
 };
-use tracing::trace;
+use tracing::{info, trace};
 
 use crate::{
     input::MoveInput,
@@ -136,6 +136,14 @@ where
         self.oracles
             .pre_execution(&self.executor.db, state, input.sequence())?;
 
+        let sequence_text = input.sequence().to_string();
+        let tracks_flash_loan = ["flash_loan", "test_flash_loan", "repay_flash_loan"]
+            .iter()
+            .any(|needle| sequence_text.contains(needle));
+        if tracks_flash_loan {
+            info!("executing flash-loan candidate: {}", sequence_text);
+        }
+
         trace!("Executing input: {}", input.sequence());
         state.executions_mut().add_assign(1);
         let gas_id = state.fuzz_state().gas_id;
@@ -172,6 +180,9 @@ where
         let mut trace_outcome = tracer.outcome();
 
         trace!("Execution finished with status: {:?}", effects.status());
+        if tracks_flash_loan {
+            info!("flash-loan candidate finished with status: {:?}", effects.status());
+        }
 
         let (stage_idx, success) = match effects.status() {
             ExecutionStatus::Failure { command, .. } => (
@@ -234,11 +245,20 @@ where
         if !oracle_vulns.is_empty() {
             trace_outcome.findings.extend(oracle_vulns.iter().cloned());
         }
-        let kind = if !oracle_vulns.is_empty() {
+        let has_findings = !trace_outcome.findings.is_empty();
+        let kind = if has_findings {
             ExitKind::Crash
         } else {
             trace_outcome.verdict
         };
+        if tracks_flash_loan {
+            info!(
+                "flash-loan outcome summary: kind={:?}, findings={}, oracle_vulns={}",
+                kind,
+                trace_outcome.findings.len(),
+                oracle_vulns.len()
+            );
+        }
         exec = ExecutionOutcome {
             events_verdict: kind,
             events,

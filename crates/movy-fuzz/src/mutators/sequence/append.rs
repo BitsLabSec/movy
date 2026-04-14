@@ -132,13 +132,14 @@ where
                     movecall.arguments.push(*arg);
                     continue; // Use fixed argument if available
                 }
+                if param.is_tx_context() {
+                    // TxContext is injected by the VM and must never be sampled or passed
+                    // explicitly in the generated MoveCall arguments.
+                    continue;
+                }
                 if param.needs_sample() {
                     movecall.arguments.push(args.remove(0));
                 } else {
-                    if param.is_tx_context() {
-                        // Skip tx context parameters
-                        continue;
-                    }
                     debug!("Generating initial value for parameter {}: {:?}", i, param);
                     let init_value = param.gen_input_arg().unwrap_or_else(|| {
                         panic!(
@@ -201,6 +202,11 @@ where
                     movecall.arguments.push(*arg);
                     continue; // Use fixed argument if available
                 }
+                if param.is_tx_context() {
+                    // TxContext is injected by the VM and must never be sampled or passed
+                    // explicitly in the generated MoveCall arguments.
+                    continue;
+                }
                 if param.needs_sample() {
                     if let Some(arg) = partial_args.remove(0) {
                         struct_params.remove(0);
@@ -212,16 +218,8 @@ where
                     let funcs = state
                         .fuzz_state()
                         .type_graph
-                        .find_producers(&arg_type, true);
-                    // except itself
-                    let funcs = funcs
-                        .iter()
-                        .filter(|(m, f)| {
-                            !(m.module_address == addr
-                                && &m.module_name == mname
-                                && &f.name == fname)
-                        })
-                        .collect::<Vec<_>>();
+                        .find_producers(&arg_type, true, Some((&addr, mname, fname)));
+                    let funcs = funcs.iter().collect::<Vec<_>>();
                     if funcs.is_empty() {
                         debug!(
                             "No producing functions found for type {:?} in {:?}::{:?}",

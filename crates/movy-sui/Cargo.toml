@@ -11,6 +11,7 @@ repository.workspace = true
 tracing.workspace = true
 move-trace-format ={workspace = true}
 color-eyre = {workspace = true}
+anyhow = {workspace = true}
 move-vm-types = {workspace = true}
 move-vm-runtime = {workspace = true, features = ["tracing"]}
 sui-execution.workspace = true

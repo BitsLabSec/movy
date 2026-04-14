@@ -1,6 +1,7 @@
 use std::{
     collections::{BTreeMap, BTreeSet},
     fmt::Display,
+    fs,
     path::PathBuf,
 };
 
@@ -144,6 +145,15 @@ impl SuiTargetArgs {
 
         let mut local_abis = vec![];
         for local in resolved_locals.iter() {
+            if let Some((package_name, package_addr)) = bundled_local_package_mapping(local)? {
+                tracing::info!(
+                    "Skipping bundled local package {} at {} because it is already installed",
+                    package_name,
+                    local.display()
+                );
+                local_name_map.entry(package_name).or_insert(package_addr);
+                continue;
+            }
             let is_explicit_target = explicit_locals.contains(local);
             tracing::info!("Deploying the local package at {}", local.display());
             let (target_package, testing_abi, abi, package_names) = env
@@ -181,6 +191,45 @@ impl SuiTargetArgs {
     }
 }
 
+fn bundled_local_package_mapping(local: &std::path::Path) -> Result<Option<(String, MoveAddress)>, MovyError> {
+    let manifest = local.join("Move.toml");
+    let Ok(content) = fs::read_to_string(&manifest) else {
+        return Ok(None);
+    };
+
+    let mut in_package = false;
+    let mut name = None::<String>;
+    let mut published_at = None::<String>;
+    for raw_line in content.lines() {
+        let line = raw_line.trim();
+        if line.starts_with('[') && line.ends_with(']') {
+            in_package = line == "[package]";
+            continue;
+        }
+        if !in_package {
+            continue;
+        }
+        if let Some((key, value)) = line.split_once('=') {
+            let key = key.trim();
+            let value = value.trim().trim_matches('"');
+            match key {
+                "name" => name = Some(value.to_string()),
+                "published-at" => published_at = Some(value.to_string()),
+                _ => {}
+            }
+        }
+    }
+
+    if name.as_deref() == Some("movy") && published_at.as_deref() == Some("0xdeadbeef") {
+        return Ok(Some((
+            "movy".to_string(),
+            MoveAddress::from_str("0xdeadbeef")?,
+        )));
+    }
+
+    Ok(None)
+}
+
 #[derive(Args, Clone, Debug, Serialize, Deserialize)]
 pub struct FuzzTargetArgs {
     #[arg(long, value_delimiter = ',', help = "Include specific packages")]
@@ -200,7 +249,7 @@ pub struct FuzzTargetArgs {
     #[arg(long, value_delimiter = ',', help = "Exclude specific types")]
     pub exclude_types: Option<Vec<String>>,
     #[arg(long, value_delimiter = ',')]
-    pub privilege_functions: Option<Vec<FuzzFunctionScore>>,
+    pub privilege_functions: Option<Vec<PrivilegeFunctionScoreSelector>>,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq, PartialOrd, Ord)]
@@ -327,5 +376,37 @@ impl FunctionSelector {
             &self.module,
             &self.function,
         ))
+    }
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq, PartialOrd, Ord)]
+pub struct PrivilegeFunctionScoreSelector {
+    pub function: FunctionSelector,
+    pub score: u64,
+}
+
+impl std::str::FromStr for PrivilegeFunctionScoreSelector {
+    type Err = MovyError;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        let st = s.split('/').collect_vec();
+        if st.len() != 2 {
+            return Err(eyre!("expected usage: hopv4::liquidity::open_position/1000").into());
+        }
+        let score = u64::from_str(st[1]).map_err(|_| eyre!("can not parse score {}", st[1]))?;
+        let function = FunctionSelector::from_str(st[0])?;
+        Ok(Self { function, score })
+    }
+}
+
+impl PrivilegeFunctionScoreSelector {
+    pub fn resolve(
+        &self,
+        local_name_map: &BTreeMap<String, MoveAddress>,
+    ) -> Result<FuzzFunctionScore, MovyError> {
+        Ok(FuzzFunctionScore {
+            function: self.function.to_ident(local_name_map)?,
+            score: self.score,
+        })
     }
 }

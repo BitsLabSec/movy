@@ -302,7 +302,8 @@ impl<I, S> SequenceMutator<I, S> {
         S: HasRand + HasFuzzMetadata + HasFuzzEnv,
     {
         let ptb = input.sequence_mut();
-
+        let functions = state.fuzz_state().target_functions.clone();
+        assert!(!functions.is_empty(), "No target functions available");
         let inc = if ptb.commands.len() <= 3 {
             true
         } else {
@@ -314,8 +315,6 @@ impl<I, S> SequenceMutator<I, S> {
             return self.remove_command(state.fuzz_state(), ptb, idx);
         }
         let mut selected_times = 0;
-        let functions = state.fuzz_state().target_functions.clone();
-        assert!(!functions.is_empty(), "No target functions available");
         let ptb_snapshot = ptb.clone();
         let mut result = MutationResult::Skipped;
         loop {
@@ -345,7 +344,7 @@ impl<I, S> SequenceMutator<I, S> {
             {
                 debug!("function: {:?}, weight: {}", f.0, f.1);
             }
-            let function = weighted_sample(&functions, &weights, state);
+            let function = weighted_sample(&functions, &weights, state).clone();
             let (idx, used_arguments) = if let Some(provider) = &self.flash {
                 match provider {
                     FlashProvider::Cetus { .. } => (
@@ -364,7 +363,7 @@ impl<I, S> SequenceMutator<I, S> {
             if append_function(
                 state,
                 ptb,
-                function,
+                &function,
                 BTreeMap::new(),
                 BTreeMap::new(),
                 &used_arguments,
@@ -399,6 +398,17 @@ impl<I, S> SequenceMutator<I, S> {
                 ptb.commands.len(),
                 object_data.hot_potatoes,
             );
+            let sequence_text = ptb.to_string();
+            let tracks_flash_loan = ["flash_loan", "test_flash_loan", "repay_flash_loan"]
+                .iter()
+                .any(|needle| sequence_text.contains(needle));
+            if tracks_flash_loan && !object_data.hot_potatoes.is_empty() {
+                tracing::info!(
+                    "flash-loan candidate still has unresolved hot potatoes: {:?} sequence={}",
+                    object_data.hot_potatoes,
+                    sequence_text
+                );
+            }
             update_score(&object_data.hot_potatoes, state);
             if object_data.hot_potatoes.is_empty() {
                 result = MutationResult::Mutated;
@@ -407,6 +417,13 @@ impl<I, S> SequenceMutator<I, S> {
         }
 
         if result == MutationResult::Skipped {
+            let sequence_text = ptb.to_string();
+            if ["flash_loan", "test_flash_loan", "repay_flash_loan"]
+                .iter()
+                .any(|needle| sequence_text.contains(needle))
+            {
+                tracing::info!("flash-loan candidate dropped by mutator: {}", sequence_text);
+            }
             *ptb = ptb_snapshot;
         }
         let object_data = { ObjectData::from_ptb(ptb, state) };
