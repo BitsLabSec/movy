@@ -83,14 +83,17 @@ where
         arguments: vec![],
     });
     let MoveSequenceCall::Call(movecall) = &mut cmd else {
-        panic!("Expected MoveCall command");
+        unreachable!("cmd was just constructed as MoveSequenceCall::Call");
     };
     debug!("Adding function: {:?}", function_ident);
-    let function = state
+    let Some(function) = state
         .fuzz_state()
         .get_function(&addr, mname, fname)
-        .unwrap_or_else(|| panic!("Function not found: {}::{}::{}", addr, mname, fname))
-        .clone();
+        .cloned()
+    else {
+        debug!("Function not found: {addr}::{mname}::{fname}, skipping append");
+        return None;
+    };
     let mut struct_params = function
         .parameters
         .clone()
@@ -110,7 +113,10 @@ where
     let mut fixed_ty_args = fixed_ty_args;
     for (i, (_, ty_tag)) in fixed_args.iter() {
         if fixed_ty_args.contains_key(i) && fixed_ty_args[i] != *ty_tag {
-            panic!("Conflicting type arguments for index {}", i);
+            debug!(
+                "Conflicting type arguments for index {i} in {addr}::{mname}::{fname}, skipping"
+            );
+            return None;
         }
         fixed_ty_args.insert(*i, ty_tag.clone());
     }
@@ -140,12 +146,12 @@ where
                         continue;
                     }
                     debug!("Generating initial value for parameter {}: {:?}", i, param);
-                    let init_value = param.gen_input_arg().unwrap_or_else(|| {
-                        panic!(
-                            "Failed to generate initial value for parameter {}: {:?}",
-                            i, param
-                        )
-                    });
+                    let Some(init_value) = param.gen_input_arg() else {
+                        debug!(
+                            "Failed to generate initial value for parameter {i}: {param:?}, skipping {addr}::{mname}::{fname}"
+                        );
+                        return None;
+                    };
                     let mut init_value = MutableValue::new(init_value);
                     init_value.mutate(state, &BTreeSet::new(), false);
                     let init_value = init_value.value;
@@ -287,7 +293,7 @@ where
                     ) {
                         let MoveSequenceCall::Call(new_movecall) = ptb.commands.last_mut().unwrap()
                         else {
-                            panic!("Expected MoveCall command");
+                            unreachable!("append_function always pushes MoveSequenceCall::Call");
                         };
                         let mut ty_args: BTreeMap<u16, MoveTypeTag> =
                             ty_args.clone().into_iter().collect::<BTreeMap<_, _>>();
@@ -319,7 +325,12 @@ where
                         continue;
                     }
                     debug!("Generating initial value for parameter {}: {:?}", i, param);
-                    let init_value = param.gen_input_arg().unwrap();
+                    let Some(init_value) = param.gen_input_arg() else {
+                        debug!(
+                            "Failed to generate initial value for parameter {i}: {param:?}, skipping {addr}::{mname}::{fname}"
+                        );
+                        return None;
+                    };
                     let mut init_value = MutableValue::new(init_value);
                     init_value.mutate(state, &BTreeSet::new(), false);
                     let init_value = init_value.value;
@@ -426,7 +437,10 @@ where
                     .map(|(j, ty_arg)| (j as u16, ty_arg.clone()))
                     .collect::<BTreeMap<_, _>>();
                 let MoveTypeTag::Struct(s) = param.subst(&ty_args_map).unwrap() else {
-                    panic!("Expected {special_string} parameter to be a struct");
+                    debug!(
+                        "Expected {special_string} parameter to be a struct in {addr}::{mname}::{fname}, skipping"
+                    );
+                    return None;
                 };
                 let old_arg =
                     std::mem::replace(arg, SequenceArgument::Result(ptb.commands.len() as u16));
