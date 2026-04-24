@@ -71,12 +71,12 @@ pub enum AnalysisSubcommand {
 }
 
 #[derive(Args)]
-pub struct AnlaysisArgs {
+pub struct AnalysisArgs {
     #[clap(subcommand)]
     pub cmd: AnalysisSubcommand,
 }
 
-impl AnlaysisArgs {
+impl AnalysisArgs {
     pub async fn run(self) -> Result<(), MovyError> {
         match self.cmd {
             AnalysisSubcommand::TypeGraph(args) => args.run().await?,

@@ -81,7 +81,7 @@ public fun movy_post_increment(
     let state = context::borrow_state(movy);
     let previous_val = bag::borrow<ID, u64>(state, ctr_id);
     if (*previous_val + n != new_val) {
-        crash_because(b"Increment does not correctly inreases internal value.".to_string());
+        crash_because(b"Increment does not correctly increases internal value.".to_string());
     }
 }
 ```
@@ -145,7 +145,7 @@ To write invariants for contracts, see [the counter sample](./test-data/counter/
 movy = {git = "https://github.com/BitsLabSec/movy", subdir = "move/movy", rev = "master"}
 ```
 
-## Contritubions
+## Contributions
 
 **Movy** is very open to contributions! We expect your feedbacks and pull requests. See the roadmap or contact us for further information.
 
@@ -159,7 +159,7 @@ At this moment, `movy` is in very early-alpha state with the folloing features m
 
 ## Credits
 
-Belobog is inspired by several pioneering projects:
+Movy is inspired by several pioneering projects:
 
 - [Belobog](https://github.com/abortfuzz/belobog)
 - [ityfuzz](https://github.com/fuzzland/ityfuzz)

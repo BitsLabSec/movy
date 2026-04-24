@@ -88,6 +88,6 @@ public fun movy_post_increment(
     let previous_val = bag::borrow<ID, u64>(state, ctr_id);
     log_keyed_u64(b"post-increment".to_string(), new_val);
     if (*previous_val + n != new_val) {
-        crash_because(b"Increment does not correctly inreases internal value.".to_string());
+        crash_because(b"Increment does not correctly increases internal value.".to_string());
     }
 }

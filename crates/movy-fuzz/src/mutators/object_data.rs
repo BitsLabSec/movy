@@ -230,7 +230,7 @@ impl ObjectData {
                 }
             }
 
-            for (j, ret_ty) in function.return_paramters.iter().enumerate() {
+            for (j, ret_ty) in function.return_parameters.iter().enumerate() {
                 if let MoveAbiSignatureToken::Vector(inner) = ret_ty {
                     let instantiated_ret_ty = ret_ty.subst(ty_args_map).unwrap();
                     match inner.as_ref() {
@@ -271,7 +271,7 @@ impl ObjectData {
                 if !matches!(instantiated_ret_ty, MoveTypeTag::Struct(_)) {
                     continue; // Only process struct return types
                 }
-                let res_arg = if function.return_paramters.len() == 1 {
+                let res_arg = if function.return_parameters.len() == 1 {
                     SequenceArgument::Result(i as u16)
                 } else {
                     SequenceArgument::NestedResult(i as u16, j as u16)

@@ -164,7 +164,7 @@ impl<
                     gas,
                     None,
                 )?;
-                log::info!("Commiting movy_init effects...");
+                log::info!("Committing movy_init effects...");
                 log::debug!(
                     "Status: {:?} Changed Objects: {}, Removed Objects: {}",
                     results.effects.status(),

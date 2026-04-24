@@ -297,7 +297,7 @@ where
                 .iter()
                 .any(|param| param.contains_type_param(i as u16))
                 && !function
-                    .return_paramters
+                    .return_parameters
                     .iter()
                     .any(|ret| ret.contains_type_param(i as u16))
             {
@@ -327,10 +327,10 @@ where
                         if !function
                             .parameters
                             .iter()
-                            .chain(function.return_paramters.iter())
+                            .chain(function.return_parameters.iter())
                             .any(|param| param.contains_type_param(i as u16))
                             && !function
-                                .return_paramters
+                                .return_parameters
                                 .iter()
                                 .any(|ret| ret.contains_type_param(i as u16))
                         {

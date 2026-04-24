@@ -1,6 +1,6 @@
 use clap::{Parser, Subcommand};
 
-use crate::{analysis::AnlaysisArgs, sui::SuiArgs};
+use crate::{analysis::AnalysisArgs, sui::SuiArgs};
 
 mod analysis;
 mod aptos;
@@ -9,7 +9,7 @@ mod sui;
 #[derive(Subcommand)]
 pub enum MovySubcommand {
     Sui(SuiArgs),
-    Analysis(AnlaysisArgs), // Aptos(AptosArgs)
+    Analysis(AnalysisArgs), // Aptos(AptosArgs)
 }
 
 #[derive(Parser)]

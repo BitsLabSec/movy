@@ -237,7 +237,7 @@ where
                     );
                     let Some((arg_ty_arg, mut producing_ty_arg, mapping, ret_idx)) = pre_func
                         .1
-                        .return_paramters
+                        .return_parameters
                         .iter()
                         .enumerate()
                         .filter_map(|(i, ret_ty)| {
@@ -462,11 +462,11 @@ where
     );
 
     let arguments = movecall.arguments.clone();
-    let returns = if function.return_paramters.len() == 1 {
+    let returns = if function.return_parameters.len() == 1 {
         vec![SequenceArgument::Result(ptb.commands.len() as u16)]
     } else {
         function
-            .return_paramters
+            .return_parameters
             .iter()
             .enumerate()
             .map(|(j, _)| SequenceArgument::NestedResult(ptb.commands.len() as u16, j as u16))

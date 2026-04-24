@@ -53,7 +53,7 @@ pub fn process_balance(ptb: &mut MoveSequence, state: &(impl HasFuzzMetadata + H
             )
             .unwrap();
         let Some(MoveAbiSignatureToken::StructInstantiation(_, type_arguments)) =
-            function.return_paramters.get(ret_idx as usize)
+            function.return_parameters.get(ret_idx as usize)
         else {
             panic!("Expected balance return type to be a struct");
         };

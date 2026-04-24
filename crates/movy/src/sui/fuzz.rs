@@ -127,7 +127,7 @@ pub struct SuiFuzzArgs {
     pub time_limit: Option<u64>,
     #[arg(long, help = "rng seeds")]
     pub seed: Option<u64>,
-    #[arg(short, long, help = "Ouput directory to save all contents")]
+    #[arg(short, long, help = "Output directory to save all contents")]
     pub output: Option<PathBuf>,
     #[arg(
         short,
@@ -171,7 +171,7 @@ impl SuiFuzzArgs {
                 if self.force_removal {
                     std::fs::remove_dir_all(output)?;
                 } else {
-                    return Err(eyre!("The given output is already there, pass -f or env MOVY_FORCE_REMOVAl to always remove it").into());
+                    return Err(eyre!("The given output is already there, pass -f or env MOVY_FORCE_REMOVAL to always remove it").into());
                 }
             }
             std::fs::create_dir_all(output)?;

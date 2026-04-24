@@ -93,7 +93,7 @@ impl MoveTypeGraph {
             self.graph.add_edge(ty_node_idx, fidx, edge);
         }
 
-        for rt in function.return_paramters.iter() {
+        for rt in function.return_parameters.iter() {
             let ty = if let Some(deref) = rt.dereference() {
                 *deref.clone()
             } else {

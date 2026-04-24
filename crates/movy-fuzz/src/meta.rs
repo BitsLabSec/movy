@@ -198,7 +198,7 @@ fn should_skip_function(base: &Metadata, func_data: &MoveFunctionAbi) -> bool {
             || matches!(t, MoveAbiSignatureToken::Reference(_))
             || t.is_tx_context()
     }) && func_data
-        .return_paramters
+        .return_parameters
         .iter()
         .all(|t| t.is_mutable() || t.ability().is_some_and(|a| a.contains(MoveAbility::DROP)))
     {
@@ -206,7 +206,7 @@ fn should_skip_function(base: &Metadata, func_data: &MoveFunctionAbi) -> bool {
         return true;
     }
 
-    for ret_ty in func_data.return_paramters.iter() {
+    for ret_ty in func_data.return_parameters.iter() {
         let self_used = func_data
             .parameters
             .iter()

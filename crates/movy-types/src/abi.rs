@@ -985,7 +985,7 @@ impl From<Visibility> for MoveFunctionVisibility {
 pub struct MoveFunctionAbi {
     pub name: String,
     pub parameters: Vec<MoveAbiSignatureToken>,
-    pub return_paramters: Vec<MoveAbiSignatureToken>,
+    pub return_parameters: Vec<MoveAbiSignatureToken>,
     pub type_parameters: Vec<MoveAbility>,
     pub visibility: MoveFunctionVisibility,
     // TODO: Aptos's acquires
@@ -1052,12 +1052,12 @@ impl Display for MoveFunctionAbi {
                     v.to_string()
                 })
                 .join(", "),
-            if self.return_paramters.is_empty() {
+            if self.return_parameters.is_empty() {
                 "".to_string()
             } else {
                 format!(
                     ": {}",
-                    self.return_paramters
+                    self.return_parameters
                         .iter()
                         .map(|v| if f.alternate() {
                             format!("{:#}", v)
@@ -1100,7 +1100,7 @@ impl MoveFunctionAbi {
             type_parameters: ftys,
             visibility: vis,
             parameters,
-            return_paramters: returns,
+            return_parameters: returns,
         }
     }
     pub fn from_module_def(fdef: &FunctionDefinition, module: &CompiledModule) -> Self {
@@ -1227,7 +1227,7 @@ impl MovePackageAbi {
                 for ty in fc.parameters.iter_mut() {
                     ty.published_at(prev, address);
                 }
-                for ty in fc.return_paramters.iter_mut() {
+                for ty in fc.return_parameters.iter_mut() {
                     ty.published_at(prev, address);
                 }
             }
