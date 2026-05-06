@@ -10,9 +10,7 @@ use color_eyre::eyre::eyre;
 use itertools::Itertools;
 use move_binary_format::CompiledModule;
 use move_compiler::{
-    compiled_unit::NamedCompiledModule,
-    diagnostics::report_diagnostics_to_buffer,
-    editions::Flavor,
+    compiled_unit::NamedCompiledModule, diagnostics::report_diagnostics_to_buffer, editions::Flavor,
 };
 use move_core_types::account_address::AccountAddress;
 use move_package_alt::RootPackage;

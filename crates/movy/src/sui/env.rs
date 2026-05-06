@@ -191,7 +191,9 @@ impl SuiTargetArgs {
     }
 }
 
-fn bundled_local_package_mapping(local: &std::path::Path) -> Result<Option<(String, MoveAddress)>, MovyError> {
+fn bundled_local_package_mapping(
+    local: &std::path::Path,
+) -> Result<Option<(String, MoveAddress)>, MovyError> {
     let manifest = local.join("Move.toml");
     let Ok(content) = fs::read_to_string(&manifest) else {
         return Ok(None);

@@ -3,14 +3,16 @@ use movy_types::error::MovyError;
 
 use crate::sui::{
     deploy::SuiBuildDeployArgs, fuzz::SuiFuzzArgs, replay::SuiReplaySeedArgs,
-    static_analysis::SuiStaticAnalysisArgs, trace::SuiTraceArgs,
+    static_analysis::SuiStaticAnalysisArgs, test::SuiTestArgs, trace::SuiTraceArgs,
 };
 
 pub mod deploy;
 pub mod env;
 pub mod fuzz;
+pub mod prepare;
 pub mod replay;
 pub mod static_analysis;
+pub mod test;
 pub mod trace;
 pub mod utils;
 
@@ -18,6 +20,7 @@ pub mod utils;
 pub enum SuiSubcommand {
     TraceTx(SuiTraceArgs),
     Fuzz(SuiFuzzArgs),
+    Test(SuiTestArgs),
     BuildDeploy(SuiBuildDeployArgs),
     ReplaySeed(SuiReplaySeedArgs),
     StaticAnalysis(SuiStaticAnalysisArgs),
@@ -56,6 +59,7 @@ impl SuiArgs {
         match self.cmd {
             SuiSubcommand::TraceTx(args) => args.run().await?,
             SuiSubcommand::Fuzz(args) => args.run().await?,
+            SuiSubcommand::Test(args) => args.run().await?,
             SuiSubcommand::StaticAnalysis(args) => args.run().await?,
             SuiSubcommand::ReplaySeed(args) => args.run().await?,
             SuiSubcommand::BuildDeploy(args) => args.run().await?,

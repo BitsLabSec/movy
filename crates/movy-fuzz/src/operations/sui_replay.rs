@@ -59,7 +59,7 @@ where
     )?;
     tracing::info!("Replay status is {:?}", &out.results.effects.status());
     if let Some(tracer) = out.tracer {
-        println!("Trace:\n{}", &tracer.take_inner().pprint());
+        println!("Trace:\n{}", &tracer.take_inner().pprint_failure_views());
     }
 
     Ok(())

@@ -181,7 +181,10 @@ where
 
         trace!("Execution finished with status: {:?}", effects.status());
         if tracks_flash_loan {
-            info!("flash-loan candidate finished with status: {:?}", effects.status());
+            info!(
+                "flash-loan candidate finished with status: {:?}",
+                effects.status()
+            );
         }
 
         let (stage_idx, success) = match effects.status() {

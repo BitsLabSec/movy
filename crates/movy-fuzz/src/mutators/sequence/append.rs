@@ -215,10 +215,11 @@ where
                     }
                     let arg_type = struct_params.remove(0).partial_subst(&ty_args);
 
-                    let funcs = state
-                        .fuzz_state()
-                        .type_graph
-                        .find_producers(&arg_type, true, Some((&addr, mname, fname)));
+                    let funcs = state.fuzz_state().type_graph.find_producers(
+                        &arg_type,
+                        true,
+                        Some((&addr, mname, fname)),
+                    );
                     let funcs = funcs.iter().collect::<Vec<_>>();
                     if funcs.is_empty() {
                         debug!(

@@ -85,8 +85,7 @@ where
         AppendOutcomeFeedback {},
         coverage_feedback
     );
-    let mut crash_feedback =
-        feedback_and_fast!(CrashFeedback::new(), AppendOutcomeFeedback {});
+    let mut crash_feedback = feedback_and_fast!(CrashFeedback::new(), AppendOutcomeFeedback {});
 
     let corpus = if let Some(output) = output {
         let corpus = output.join("queue");
