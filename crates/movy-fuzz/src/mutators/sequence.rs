@@ -30,8 +30,10 @@ mod hooks;
 mod post;
 mod remap;
 
-use append::{append_function, weighted_sample};
-use hooks::{apply_hooks, strip_generated};
+pub use append::append_function;
+use append::weighted_sample;
+pub use hooks::apply_hooks;
+use hooks::strip_generated;
 
 pub struct SequenceMutator<I, S> {
     pub ph: PhantomData<(I, S)>,

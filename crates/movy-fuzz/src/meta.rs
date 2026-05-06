@@ -320,7 +320,10 @@ fn collect_validation_target_functions(
                     &module.module_id.module_name,
                     &func_data.name,
                 );
-                debug!("Including validation wrapper target by default: {:?}", &func_ident);
+                debug!(
+                    "Including validation wrapper target by default: {:?}",
+                    &func_ident
+                );
                 target_functions.push(func_ident);
             }
         }
@@ -663,13 +666,19 @@ impl FuzzMetadata {
 
         let filtered_packages = normalize_packages(target_packages, &filters);
         let mut target_functions = collect_target_functions(&base, &filtered_packages);
-        target_functions.extend(collect_validation_target_functions(&base, &filtered_packages));
+        target_functions.extend(collect_validation_target_functions(
+            &base,
+            &filtered_packages,
+        ));
         target_functions = apply_function_filters(target_functions, &filters);
         target_functions.sort();
         target_functions.dedup();
         if target_functions.is_empty() {
             target_functions = collect_testing_target_functions(&base, &filtered_packages);
-            target_functions.extend(collect_validation_target_functions(&base, &filtered_packages));
+            target_functions.extend(collect_validation_target_functions(
+                &base,
+                &filtered_packages,
+            ));
             target_functions = apply_function_filters(target_functions, &filters);
             target_functions.sort();
             target_functions.dedup();

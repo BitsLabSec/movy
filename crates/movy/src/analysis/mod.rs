@@ -6,9 +6,12 @@ use std::{
 use clap::{Args, Subcommand};
 use movy_types::{error::MovyError, module::MoveModule};
 
-use crate::analysis::{call_graph::CallGraphArgs, type_graph::TypeGraphArgs};
+use crate::analysis::{
+    call_graph::CallGraphArgs, export_call_graph::ExportCallGraphArgs, type_graph::TypeGraphArgs,
+};
 
 pub mod call_graph;
+pub mod export_call_graph;
 pub mod type_graph;
 
 pub fn write_dot_may_with_pdf(dot: String, fpath: &Path) -> Result<(), MovyError> {
@@ -68,6 +71,7 @@ pub fn glob_modules(pattern: &str) -> Result<Vec<MoveModule>, MovyError> {
 pub enum AnalysisSubcommand {
     TypeGraph(TypeGraphArgs),
     CallGraph(CallGraphArgs),
+    ExportCallGraph(ExportCallGraphArgs),
 }
 
 #[derive(Args)]
@@ -81,6 +85,7 @@ impl AnlaysisArgs {
         match self.cmd {
             AnalysisSubcommand::TypeGraph(args) => args.run().await?,
             AnalysisSubcommand::CallGraph(args) => args.run().await?,
+            AnalysisSubcommand::ExportCallGraph(args) => args.run().await?,
         }
         Ok(())
     }

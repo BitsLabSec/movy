@@ -13,5 +13,8 @@ tracing.workspace = true
 itertools = {workspace = true}
 serde = {workspace = true}
 serde_json_any_key = {workspace = true}
+anyhow.workspace = true
+knowdit-repo-model = { path = "../../../knowdit-internal/crates/knowdit-repo-model" }
 
+movy-sui = {workspace = true}
 movy-types = {workspace = true}
