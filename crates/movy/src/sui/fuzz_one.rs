@@ -4,7 +4,7 @@ use clap::Args;
 use color_eyre::eyre::eyre;
 use movy_fuzz::operations::sui_test;
 use movy_sui::{lcov::LineCoverageMap, rpc::grpc::SuiGrpcArg};
-use movy_types::{error::MovyError, input::FunctionIdent};
+use movy_types::error::MovyError;
 use serde::{Deserialize, Serialize};
 
 use crate::sui::{
@@ -14,7 +14,7 @@ use crate::sui::{
 };
 
 #[derive(Args, Clone, Debug, Serialize, Deserialize)]
-pub struct SuiTestArgs {
+pub struct SuiFuzzOneArgs {
     #[clap(flatten)]
     pub roles: MovyInitRoles,
     #[arg(
@@ -44,7 +44,7 @@ pub struct SuiTestArgs {
     pub lcov: Option<PathBuf>,
 }
 
-impl SuiTestArgs {
+impl SuiFuzzOneArgs {
     pub async fn run(self) -> Result<(), MovyError> {
         let prepared = prepare_fuzz_context(
             &self.roles,
@@ -56,7 +56,6 @@ impl SuiTestArgs {
             &self.filters,
         )
         .await?;
-        let mut meta = prepared.meta;
         let lcov = self
             .lcov
             .as_ref()
@@ -64,7 +63,7 @@ impl SuiTestArgs {
                 LineCoverageMap::for_locals_with_package_ids(
                     self.target.locals.as_deref().unwrap_or_default(),
                     true,
-                    &meta.target_packages,
+                    &prepared.meta.target_packages,
                 )?
                 .map(|map| (path.clone(), map))
                 .ok_or_else(|| {
@@ -72,36 +71,6 @@ impl SuiTestArgs {
                 })
             })
             .transpose()?;
-        meta.target_functions = select_test_functions(&meta);
-        sui_test::test(prepared.env, meta, self.trace, lcov)
+        sui_test::test(prepared.env, prepared.meta, self.trace, lcov)
     }
-}
-
-fn select_test_functions(meta: &movy_fuzz::meta::FuzzMetadata) -> Vec<FunctionIdent> {
-    let mut functions: Vec<_> = meta
-        .testing_abis
-        .iter()
-        .filter(|(package, _)| meta.target_packages.contains(package))
-        .flat_map(|(package, abi)| {
-            abi.modules.iter().flat_map(move |module| {
-                module.functions.iter().filter_map(move |function| {
-                    if function.name.starts_with("test_")
-                        && function.parameters.is_empty()
-                        && function.type_parameters.is_empty()
-                    {
-                        Some(FunctionIdent::new(
-                            package,
-                            &module.module_id.module_name,
-                            &function.name,
-                        ))
-                    } else {
-                        None
-                    }
-                })
-            })
-        })
-        .collect();
-    functions.sort();
-    functions.dedup();
-    functions
 }

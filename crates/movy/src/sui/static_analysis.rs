@@ -82,6 +82,7 @@ impl SuiStaticAnalysisArgs {
                 self.deployer,
                 gas_id.into(),
                 &graphql_db,
+                None,
             )
             .await?;
 

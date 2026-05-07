@@ -12,6 +12,7 @@ use movy_fuzz::meta::FuzzFunctionScore;
 use movy_replay::{
     db::{ObjectStoreCachedStore, ObjectStoreInfo},
     env::SuiTestingEnv,
+    tracer::lcov::LineCoverageCollector,
 };
 use movy_sui::{
     compile::{SuiCompiledPackage, resolve_local_dependency_paths},
@@ -97,6 +98,7 @@ impl SuiTargetArgs {
         attacker: MoveAddress,
         gas: MoveAddress,
         rpc: &GraphQlDatabase,
+        lcov: Option<&LineCoverageCollector>,
     ) -> Result<DeployResult, MovyError>
     where
         T: ObjectStoreCachedStore
@@ -169,6 +171,7 @@ impl SuiTargetArgs {
                     self.trace_movy_init,
                     self.onchain_fallback,
                     rpc,
+                    lcov,
                 )
                 .await?;
             for name in package_names.iter() {

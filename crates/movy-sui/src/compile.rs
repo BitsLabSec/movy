@@ -52,6 +52,13 @@ fn load_root_package(folder: &Path, test_mode: bool) -> Result<RootPackage<SuiFl
         .map_err(|e| eyre!(e).into())
 }
 
+pub fn compile_package_artifacts(
+    folder: &Path,
+    test_mode: bool,
+) -> Result<CompiledPackage, MovyError> {
+    build_package_resolved(folder, test_mode)
+}
+
 pub fn build_package_resolved(
     folder: &Path,
     test_mode: bool,

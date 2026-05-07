@@ -1,4 +1,10 @@
-use std::{borrow::Cow, collections::BTreeMap, fmt::Display, marker::PhantomData, ops::AddAssign};
+use std::{
+    borrow::Cow,
+    collections::{BTreeMap, BTreeSet},
+    fmt::Display,
+    marker::PhantomData,
+    ops::AddAssign,
+};
 
 use libafl::{
     HasMetadata,
@@ -11,13 +17,16 @@ use movy_replay::{
     db::{ObjectStoreInfo, ObjectStoreMintObject},
     exec::{ExecutionTracedResults, SuiExecutor},
     tracer::{
+        SelectiveTracer, TeeTracer,
         concolic::ConcolicState,
         fuzz::{PackageResolvedCache, PackageResolver, SuiFuzzTracer},
+        lcov::LineCoverageCollector,
         op::Log,
         oracle::SuiGeneralOracle,
     },
 };
 use movy_sui::database::cache::{CachedStore, ObjectSuiStoreCommit};
+use movy_sui::lcov::BytecodeLocation;
 use movy_types::{
     input::{FunctionIdent, MoveAddress},
     oracle::{Event, OracleFinding},
@@ -78,11 +87,21 @@ pub struct SuiFuzzExecutor<T, OT, RT, I, S> {
     pub attacker: MoveAddress,
     pub oracles: RT,
     pub packages_cache: PackageResolvedCache,
+    pub line_coverage: Option<LineCoverageCollector>,
     // pub minted_gas: Object,
     // pub log_tracer: Option<SuiLogTracer>,
     pub ph: PhantomData<(I, S)>,
     pub epoch: u64,
     pub epoch_ms: u64,
+}
+
+impl<T, OT, RT, I, S> SuiFuzzExecutor<T, OT, RT, I, S> {
+    pub fn line_coverage_hits(&self) -> BTreeSet<BytecodeLocation> {
+        self.line_coverage
+            .as_ref()
+            .map(|collector| collector.hits())
+            .unwrap_or_default()
+    }
 }
 
 impl<T, OT, RT, I, S> HasObservers for SuiFuzzExecutor<T, OT, RT, I, S> {
@@ -151,13 +170,18 @@ where
             db: &self.executor.db,
             cache: std::mem::take(&mut self.packages_cache),
         };
-        let tracer = SuiFuzzTracer::new(
+        let fuzz_tracer = SuiFuzzTracer::new(
             &mut self.ob,
             state,
             &mut self.oracles,
             CODE_OBSERVER_NAME,
             resolver,
         );
+        let tracer = if let Some(collector) = &self.line_coverage {
+            SelectiveTracer::T1(TeeTracer(fuzz_tracer, collector.tracer()))
+        } else {
+            SelectiveTracer::T2(fuzz_tracer)
+        };
 
         let result = self.executor.run_ptb_with_movy_tracer_gas(
             input.sequence().to_ptb()?,
@@ -174,7 +198,11 @@ where
         let db = CachedStore::new(&self.executor.db);
         db.commit_store(results.store, &effects)
             .map_err(|e| libafl::Error::unknown(format!("commit store failed: {e}")))?;
-        let mut tracer = tracer.expect("tracer should be present when tracing is enabled");
+        let tracer = tracer.expect("tracer should be present when tracing is enabled");
+        let mut tracer = match tracer {
+            SelectiveTracer::T1(TeeTracer(fuzz_tracer, _)) => fuzz_tracer,
+            SelectiveTracer::T2(fuzz_tracer) => fuzz_tracer,
+        };
 
         self.packages_cache = std::mem::take(&mut tracer.resolver.cache);
         let mut trace_outcome = tracer.outcome();

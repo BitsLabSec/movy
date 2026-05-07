@@ -52,10 +52,6 @@ pub fn very_big_gas() -> u64 {
     100_000_000_000_000_000_00
 }
 
-fn random_digest() -> TransactionDigest {
-    TransactionDigest::from_str("8thja5nUwaEw7L5ji9tnhCurpkjHdMunRffxwx1H9HsT").unwrap()
-}
-
 #[derive(Clone)]
 pub struct SuiExecutor<T> {
     pub db: T,
@@ -118,6 +114,7 @@ where
         epoch_ms: u64,
         mut tracer: Option<R>,
         target_deployment_id: Option<ObjectID>,
+        allow_testing_calls: bool,
     ) -> Result<ExecutionTracedResults<R>, MovyError> {
         let input_objects = match tx_data.input_objects() {
             Ok(v) => v,
@@ -240,6 +237,24 @@ where
                     Ok(()),
                     &mut move_tracer,
                 )
+            } else if allow_testing_calls || tx_data.is_system_tx() {
+                sui_adapter_latest::execution_engine::execute_transaction_to_effects::<SuiFuzzMode>(
+                    &self.db,
+                    CheckedInputObjects::new_for_replay(objects.into()),
+                    tx_data.gas_data().clone(),
+                    gas,
+                    tx_data.kind().clone(),
+                    tx_data.sender(),
+                    tx_data.digest(),
+                    &self.movevm,
+                    &epoch,
+                    epoch_ms,
+                    &self.protocol_config,
+                    self.metrics.clone(),
+                    false,
+                    Ok(()),
+                    &mut move_tracer,
+                )
             } else {
                 sui_adapter_latest::execution_engine::execute_transaction_to_effects::<Normal>(
                     &self.db,
@@ -279,7 +294,7 @@ where
         epoch_ms: u64,
         tracer: Option<R>,
     ) -> Result<ExecutionTracedResults<R>, MovyError> {
-        self.run_tx_trace_inner(tx_data, epoch, epoch_ms, tracer, None)
+        self.run_tx_trace_inner(tx_data, epoch, epoch_ms, tracer, None, false)
     }
 
     pub fn run_ptb_with_movy_tracer_gas<R: MovySuiTracerExt>(
@@ -293,6 +308,26 @@ where
     ) -> Result<ExecutionTracedResults<R>, MovyError> {
         let tracer = tracer.map(|v| MovySuiTracerWrapper::from(v));
         let v = self.run_ptb_with_gas(ptb, epoch, epoch_ms, sender, gas, tracer)?;
+        Ok(ExecutionTracedResults {
+            results: v.results,
+            tracer: v.tracer.map(|t| t.tracer),
+        })
+    }
+
+    pub fn run_ptb_with_movy_testing_tracer_gas<R: MovySuiTracerExt>(
+        &self,
+        ptb: ProgrammableTransaction,
+        epoch: u64,
+        epoch_ms: u64,
+        sender: SuiAddress,
+        gas: ObjectID,
+        tracer: Option<R>,
+    ) -> Result<ExecutionTracedResults<R>, MovyError> {
+        let tracer = tracer.map(|v| MovySuiTracerWrapper::from(v));
+        let gas = self.db.get_move_object_info(gas.into())?.sui_reference();
+        let tx_kind = TransactionKind::ProgrammableTransaction(ptb.clone());
+        let tx_data = TransactionData::new(tx_kind, sender, gas, very_big_gas() / 1_000, 1);
+        let v = self.run_tx_trace_inner(tx_data, epoch, epoch_ms, tracer, None, true)?;
         Ok(ExecutionTracedResults {
             results: v.results,
             tracer: v.tracer.map(|t| t.tracer),
@@ -313,7 +348,7 @@ where
         let tx_kind = TransactionKind::ProgrammableTransaction(ptb.clone());
         let tx_data = TransactionData::new(tx_kind, sender, gas, very_big_gas() / 1_000, 1);
 
-        self.run_tx_trace_inner(tx_data, epoch, epoch_ms, tracer, target_deployment)
+        self.run_tx_trace_inner(tx_data, epoch, epoch_ms, tracer, target_deployment, false)
     }
 
     pub fn run_ptb_with_gas<R: Tracer>(
@@ -628,7 +663,7 @@ impl ExecutionMode for SuiFuzzMode {
     }
 
     fn allow_arbitrary_function_calls() -> bool {
-        Normal::allow_arbitrary_function_calls()
+        true
     }
     fn allow_arbitrary_values() -> bool {
         Normal::allow_arbitrary_values()

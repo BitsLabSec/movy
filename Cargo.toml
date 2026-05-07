@@ -69,6 +69,7 @@ move-trace-format = {git = "https://github.com/wtdcode/sui", branch = "v1.65.2-f
 move-package = {git = "https://github.com/wtdcode/sui", branch = "v1.65.2-fuzz"}
 move-compiler = {git = "https://github.com/wtdcode/sui", branch = "v1.65.2-fuzz"}
 move-disassembler = {git = "https://github.com/wtdcode/sui", branch = "v1.65.2-fuzz"}
+move-bytecode-source-map = {git = "https://github.com/wtdcode/sui", branch = "v1.65.2-fuzz"}
 move-ir-types = {git = "https://github.com/wtdcode/sui", branch = "v1.65.2-fuzz"}
 move-core-types = {git = "https://github.com/wtdcode/sui", branch = "v1.65.2-fuzz"}
 move-vm-types = {git = "https://github.com/wtdcode/sui", branch = "v1.65.2-fuzz"}

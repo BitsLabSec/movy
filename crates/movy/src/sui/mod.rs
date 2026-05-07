@@ -2,13 +2,15 @@ use clap::{Args, Subcommand};
 use movy_types::error::MovyError;
 
 use crate::sui::{
-    deploy::SuiBuildDeployArgs, fuzz::SuiFuzzArgs, replay::SuiReplaySeedArgs,
-    static_analysis::SuiStaticAnalysisArgs, test::SuiTestArgs, trace::SuiTraceArgs,
+    deploy::SuiBuildDeployArgs, fuzz::SuiFuzzArgs, fuzz_one::SuiFuzzOneArgs,
+    replay::SuiReplaySeedArgs, static_analysis::SuiStaticAnalysisArgs, test::SuiTestArgs,
+    trace::SuiTraceArgs,
 };
 
 pub mod deploy;
 pub mod env;
 pub mod fuzz;
+pub mod fuzz_one;
 pub mod prepare;
 pub mod replay;
 pub mod static_analysis;
@@ -20,6 +22,8 @@ pub mod utils;
 pub enum SuiSubcommand {
     TraceTx(SuiTraceArgs),
     Fuzz(SuiFuzzArgs),
+    #[clap(name = "fuzz-one")]
+    FuzzOne(SuiFuzzOneArgs),
     Test(SuiTestArgs),
     BuildDeploy(SuiBuildDeployArgs),
     ReplaySeed(SuiReplaySeedArgs),
@@ -59,6 +63,7 @@ impl SuiArgs {
         match self.cmd {
             SuiSubcommand::TraceTx(args) => args.run().await?,
             SuiSubcommand::Fuzz(args) => args.run().await?,
+            SuiSubcommand::FuzzOne(args) => args.run().await?,
             SuiSubcommand::Test(args) => args.run().await?,
             SuiSubcommand::StaticAnalysis(args) => args.run().await?,
             SuiSubcommand::ReplaySeed(args) => args.run().await?,

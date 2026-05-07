@@ -35,7 +35,7 @@ use sui_types::{
 use crate::{
     db::{ObjectStoreCachedStore, ObjectStoreInfo},
     exec::SuiExecutor,
-    tracer::tree::TreeTracer,
+    tracer::{SelectiveTracer, TeeTracer, lcov::LineCoverageCollector, tree::TreeTracer},
 };
 
 pub struct SuiTestingEnv<T> {
@@ -451,6 +451,7 @@ impl<
         trace_movy_init: bool,
         onchain_fallback: bool,
         rpc: &GraphQlDatabase,
+        lcov: Option<&LineCoverageCollector>,
     ) -> Result<(MoveAddress, MovePackageAbi, MovePackageAbi, Vec<String>), MovyError> {
         tracing::info!("Compiling {} with non-test mode...", path.display());
         let abi_result = SuiCompiledPackage::build_checked(path, false, unpublished, verify_deps)?;
@@ -586,17 +587,25 @@ impl<
                 tracing::info!("Detected a {} at: {}", MOVY_INIT, md.module_id);
                 // Always capture movy_init traces so failures surface detailed traces even when
                 // verbose tracing is disabled.
-                let tracer = Some(TreeTracer::new());
+                let tracer = if let Some(collector) = lcov {
+                    SelectiveTracer::T1(TeeTracer(TreeTracer::new(), collector.tracer()))
+                } else {
+                    SelectiveTracer::T2(TreeTracer::new())
+                };
                 let mut results = executor.run_ptb_with_movy_tracer_gas(
                     ptb,
                     epoch,
                     epoch_ms,
                     deployer.into(),
                     gas,
-                    tracer,
+                    Some(tracer),
                 )?;
-                let trace = std::mem::take(&mut results.tracer)
-                    .map(|tracer| tracer.take_inner().pprint_failure_views());
+                let trace = std::mem::take(&mut results.tracer).map(|tracer| match tracer {
+                    SelectiveTracer::T1(TeeTracer(tree, _)) => {
+                        tree.take_inner().pprint_failure_views()
+                    }
+                    SelectiveTracer::T2(tree) => tree.take_inner().pprint_failure_views(),
+                });
                 if !results.effects.status().is_ok() {
                     let details =
                         format_movy_init_failure(results.effects.status(), trace.as_deref());
