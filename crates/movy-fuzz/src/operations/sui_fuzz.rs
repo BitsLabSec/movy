@@ -1,4 +1,4 @@
-use std::{num::NonZero, path::PathBuf, time::Duration};
+use std::{collections::BTreeSet, num::NonZero, path::PathBuf, time::Duration};
 
 use crate::executor::SuiFuzzExecutor;
 use crate::input::MoveFuzzInput;
@@ -31,6 +31,7 @@ use movy_replay::exec::SuiExecutor;
 use movy_replay::tracer::fuzz::PackageResolvedCache;
 use movy_replay::tracer::oracle::{CouldDisabledOralce, SuiGeneralOracle};
 use movy_sui::database::cache::ObjectSuiStoreCommit;
+use movy_sui::lcov::{BytecodeLocation, LineCoverageMap};
 use movy_types::error::MovyError;
 use sui_types::storage::BackingStore;
 use sui_types::storage::{BackingPackageStore, ObjectStore};
@@ -65,6 +66,7 @@ fn fuzz_impl<T>(
     typed_bug_abort: bool,
     disable_profit_oracle: bool,
     disable_defects_oracle: bool,
+    lcov: Option<(PathBuf, LineCoverageMap)>,
 ) -> Result<(), MovyError>
 where
     T: ObjectStoreCachedStore
@@ -135,6 +137,9 @@ where
             disable_defects_oracle,
         ),
         packages_cache: PackageResolvedCache::default(),
+        line_coverage: lcov
+            .as_ref()
+            .map(|_| movy_replay::tracer::lcov::LineCoverageCollector::new()),
         epoch: state.fuzz_state().epoch,
         epoch_ms: state.fuzz_state().epoch_ms,
         ph: std::marker::PhantomData,
@@ -148,6 +153,7 @@ where
 
     let mut fuzzer = StdFuzzer::new(sched, corpus_feedback, crash_feedback);
     let mut mgr = SimpleEventManager::new(SimpleMonitor::new(|s| info!("{}", s)));
+    let mut last_lcov_hits = BTreeSet::<BytecodeLocation>::new();
 
     info!("Adding initial input...");
     let initial_input = MoveFuzzInput::new();
@@ -238,6 +244,14 @@ where
         // Clear per-round execution outcome to avoid leaking stage indices into the next round.
         state.extra_state_mut().global_outcome = None;
 
+        if let Some((lcov_path, lcov_map)) = &lcov {
+            let hits = executor.line_coverage_hits();
+            if hits != last_lcov_hits {
+                lcov_map.write_lcov(hits.clone(), lcov_path)?;
+                last_lcov_hits = hits;
+            }
+        }
+
         info!("Cycle {} done", cycle);
         cycle += 1;
         mgr.report_progress(&mut state)?;
@@ -269,6 +283,7 @@ pub fn fuzz(
     typed_bug_abort: bool,
     disable_profit_oracle: bool,
     disable_defects_oracle: bool,
+    lcov: Option<(PathBuf, LineCoverageMap)>,
 ) -> Result<(), MovyError> {
     fuzz_impl(
         meta,
@@ -279,6 +294,7 @@ pub fn fuzz(
         typed_bug_abort,
         disable_profit_oracle,
         disable_defects_oracle,
+        lcov,
     )?;
     Ok(())
 }

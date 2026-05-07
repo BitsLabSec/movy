@@ -1,10 +1,15 @@
-use std::{collections::BTreeMap, fmt::Write, sync::Arc};
+use std::{collections::BTreeMap, fmt::Write, path::PathBuf, sync::Arc};
 
 use color_eyre::eyre::eyre;
 use libafl::{HasMetadata, state::HasRand};
 use libafl_bolts::serdeany::SerdeAnyMap;
-use movy_replay::{env::SuiTestingEnv, exec::SuiExecutor, tracer::tree::TreeTracer};
+use movy_replay::{
+    env::SuiTestingEnv,
+    exec::SuiExecutor,
+    tracer::{SelectiveTracer, TeeTracer, lcov::LineCoverageCollector, tree::TreeTracer},
+};
 use movy_sui::database::cache::CachedStore;
+use movy_sui::lcov::LineCoverageMap;
 use movy_types::{
     error::MovyError,
     input::{FunctionIdent, MoveSequence},
@@ -89,6 +94,7 @@ pub fn test<T>(
     env: SuiTestingEnv<Arc<CachedStore<T>>>,
     meta: FuzzMetadata,
     trace: bool,
+    lcov: Option<(PathBuf, LineCoverageMap)>,
 ) -> Result<(), MovyError>
 where
     T: ObjectStore + BackingStore + BackingPackageStore + Clone + 'static,
@@ -107,6 +113,8 @@ where
     let epoch = state.fuzz_state().epoch;
     let epoch_ms = state.fuzz_state().epoch_ms;
     let gas_id = state.fuzz_state().gas_id;
+
+    let coverage = lcov.map(|(path, map)| (path, map, LineCoverageCollector::new()));
 
     for function in target_functions {
         println!("running {function}");
@@ -129,17 +137,23 @@ where
         }
 
         let sequence = apply_hooks(&mut state, &sequence);
-        let results = executor.run_ptb_with_movy_tracer_gas(
+        let tracer = if let Some((_, _, collector)) = &coverage {
+            SelectiveTracer::T1(TeeTracer(TreeTracer::new(), collector.tracer()))
+        } else {
+            SelectiveTracer::T2(TreeTracer::new())
+        };
+        let results = executor.run_ptb_with_movy_testing_tracer_gas(
             sequence.to_ptb()?,
             epoch,
             epoch_ms,
             attacker.into(),
             gas_id.into(),
-            Some(TreeTracer::new()),
+            Some(tracer),
         )?;
-        let trace_output = results
-            .tracer
-            .map(|tracer| tracer.take_inner().pprint_failure_views());
+        let trace_output = results.tracer.map(|tracer| match tracer {
+            SelectiveTracer::T1(TeeTracer(tree, _)) => tree.take_inner().pprint_failure_views(),
+            SelectiveTracer::T2(tree) => tree.take_inner().pprint_failure_views(),
+        });
 
         if !results.results.effects.status().is_ok() {
             return Err(eyre!(
@@ -158,6 +172,10 @@ where
             println!("trace for {function}:\n{trace_output}");
         }
         println!("ok {function}");
+    }
+
+    if let Some((path, map, collector)) = coverage {
+        map.write_lcov(collector.hits(), &path)?;
     }
 
     Ok(())

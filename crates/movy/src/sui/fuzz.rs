@@ -6,6 +6,7 @@ use movy_fuzz::operations::sui_fuzz;
 use movy_replay::{db::ObjectStoreCachedStore, env::SuiTestingEnv};
 use movy_sui::{
     database::{cache::CachedStore, empty::EmptyStore, graphql::GraphQlDatabase},
+    lcov::LineCoverageMap,
     rpc::grpc::SuiGrpcArg,
     utils::TrivialBackStore,
 };
@@ -74,6 +75,8 @@ pub struct SuiFuzzArgs {
         default_value_t = false
     )]
     pub disable_defects_oracle: bool,
+    #[arg(long, help = "Write line coverage in lcov format to this file")]
+    pub lcov: Option<PathBuf>,
 }
 
 impl SuiFuzzArgs {
@@ -102,6 +105,21 @@ impl SuiFuzzArgs {
         .await?;
         let testing_env = prepared.env;
         let meta = prepared.meta;
+        let lcov = self
+            .lcov
+            .as_ref()
+            .map(|path| {
+                LineCoverageMap::for_locals_with_package_ids(
+                    self.target.locals.as_deref().unwrap_or_default(),
+                    true,
+                    &meta.target_packages,
+                )?
+                .map(|map| (path.clone(), map))
+                .ok_or_else(|| {
+                    MovyError::from(eyre!("--lcov requires at least one --locals package"))
+                })
+            })
+            .transpose()?;
 
         may_save_json_value(&self.output, "fuzz_meta.json", &meta)?;
         may_save_bytes(&self.output, "env.bin", &testing_env.inner().dump().await?)?;
@@ -128,6 +146,7 @@ impl SuiFuzzArgs {
                 self.typed_bug_abort,
                 self.disable_profit_oracle,
                 self.disable_defects_oracle,
+                lcov,
             )
         })
         .await??;

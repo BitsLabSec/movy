@@ -1,9 +1,14 @@
-use std::str::FromStr;
+use std::{path::PathBuf, str::FromStr};
 
 use clap::Args;
-use movy_replay::{db::ObjectStoreMintObject, env::SuiTestingEnv, exec::very_big_gas};
+use color_eyre::eyre::eyre;
+use movy_replay::{
+    db::ObjectStoreMintObject, env::SuiTestingEnv, exec::very_big_gas,
+    tracer::lcov::LineCoverageCollector,
+};
 use movy_sui::{
     database::{cache::CachedStore, empty::EmptyStore, graphql::GraphQlDatabase},
+    lcov::LineCoverageMap,
     rpc::graphql::GraphQlClient,
     utils::TrivialBackStore,
 };
@@ -27,6 +32,8 @@ pub struct SuiBuildDeployArgs {
     pub target: SuiTargetArgs,
     #[clap(flatten)]
     pub roles: MovyInitRoles,
+    #[arg(long, help = "Write line coverage in lcov format to this file")]
+    pub lcov: Option<PathBuf>,
 }
 
 impl SuiBuildDeployArgs {
@@ -56,6 +63,8 @@ impl SuiBuildDeployArgs {
         testing_env.mock_testing_std()?;
         testing_env.install_movy()?;
 
+        let coverage = self.lcov.as_ref().map(|_| LineCoverageCollector::new());
+
         // TODO: Drop dependency on graphql
         let result = self
             .target
@@ -68,9 +77,27 @@ impl SuiBuildDeployArgs {
                 self.roles.attacker,
                 gas_id.into(),
                 &gdb,
+                coverage.as_ref(),
             )
             .await?;
         tracing::info!("Deployment succeeds, summary: {}", &result);
+        if let Some(path) = &self.lcov {
+            let map = LineCoverageMap::for_locals_with_package_ids(
+                self.target.locals.as_deref().unwrap_or_default(),
+                true,
+                &result.target_packages_deployed,
+            )?
+            .ok_or_else(|| {
+                MovyError::from(eyre!("--lcov requires at least one --locals package"))
+            })?;
+            map.write_lcov(
+                coverage
+                    .as_ref()
+                    .map(|collector| collector.hits())
+                    .unwrap_or_default(),
+                &path,
+            )?;
+        }
         Ok(())
     }
 }

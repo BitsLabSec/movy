@@ -10,6 +10,7 @@ use crate::tracer::state::TraceState;
 pub mod concolic;
 pub mod extra;
 pub mod fuzz;
+pub mod lcov;
 pub mod op;
 pub mod oracle;
 pub mod state;
@@ -207,6 +208,60 @@ where
             Self::T1(v) => v.close_frame(state, frame_id, return_, gas_left),
             Self::T2(v) => v.close_frame(state, frame_id, return_, gas_left),
         }
+    }
+}
+
+pub struct TeeTracer<T1, T2>(pub T1, pub T2);
+
+impl<T1, T2> MovySuiTracerExt for TeeTracer<T1, T2>
+where
+    T1: MovySuiTracerExt,
+    T2: MovySuiTracerExt,
+{
+    fn on_raw_event(&mut self, state: &TraceState, ev: &TraceEvent) -> bool {
+        let keep_left = self.0.on_raw_event(state, ev);
+        let keep_right = self.1.on_raw_event(state, ev);
+        keep_left || keep_right
+    }
+
+    fn on_move_call(&mut self, state: &TraceState) {
+        self.0.on_move_call(state);
+        self.1.on_move_call(state);
+    }
+
+    fn on_effect(&mut self, state: &TraceState, effect: &Box<Effect>) {
+        self.0.on_effect(state, effect);
+        self.1.on_effect(state, effect);
+    }
+
+    fn open_frame(&mut self, state: &TraceState, frame: &Box<Frame>, gas_left: u64) {
+        self.0.open_frame(state, frame, gas_left);
+        self.1.open_frame(state, frame, gas_left);
+    }
+
+    fn close_frame(
+        &mut self,
+        state: &TraceState,
+        frame_id: TraceIndex,
+        return_: &Vec<TraceValue>,
+        gas_left: u64,
+    ) {
+        self.0.close_frame(state, frame_id, return_, gas_left);
+        self.1.close_frame(state, frame_id, return_, gas_left);
+    }
+
+    fn before_instruction(
+        &mut self,
+        state: &TraceState,
+        tys: &Vec<TypeTag>,
+        pc: u16,
+        gas_left: u64,
+        instruction: &Bytecode,
+    ) {
+        self.0
+            .before_instruction(state, tys, pc, gas_left, instruction);
+        self.1
+            .before_instruction(state, tys, pc, gas_left, instruction);
     }
 }
 

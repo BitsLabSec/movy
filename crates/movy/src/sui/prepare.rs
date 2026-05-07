@@ -171,6 +171,7 @@ pub(crate) async fn prepare_fuzz_context(
             roles.attacker,
             gas_id.into(),
             &graphql_db,
+            None,
         )
         .await?;
 

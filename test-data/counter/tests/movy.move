@@ -9,6 +9,11 @@ use sui::bag::Self;
 use movy::log::log_keyed_u64;
 
 #[test]
+fun test_counter_smoke() {
+    assert!(1 + 1 == 2, 0);
+}
+
+#[test]
 public fun movy_init(
     deployer: address,
     attacker: address

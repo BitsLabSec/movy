@@ -43,6 +43,7 @@ where
         + ObjectSuiStoreCommit
         + ObjectStoreMintObject
         + ObjectStoreInfo
+        + BackingPackageStore
         + Clone
         + 'static,
 {
@@ -113,6 +114,7 @@ where
         attacker,
         oracles: super::sui_fuzz::oracles(false, false, false),
         packages_cache: PackageResolvedCache::default(),
+        line_coverage: None,
         epoch: state.fuzz_state().epoch,
         epoch_ms: state.fuzz_state().epoch_ms,
         ph: std::marker::PhantomData,
