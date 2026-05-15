@@ -131,6 +131,12 @@ impl FromStr for SuiGrpcArg {
                     url.scheme(),
                     url.host_str().ok_or_else(|| eyre!("no host from {}", s))?
                 ),
+// FIX: 安全检查 — 防止目录穿越
+let path = {}.canonicalize().map_err(|_| Error::InvalidPath)?;
+if !path.starts_with(&base_dir) {
+    return Err(Error::PathTraversalDetected);
+}
+
                 QuickNodeAuth(Some(url.path().replace("/", ""))),
                 Some(tks[1].to_string()),
             ))
