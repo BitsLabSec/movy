@@ -21,12 +21,12 @@ jobs:
         include:
           - target: x86_64-unknown-linux-gnu
             os: ubuntu-latest
-            container: ubuntu:20.04
+            container: ubuntu:22.04
             artifact: movy-linux-amd64
             archive: tar.gz
           - target: aarch64-unknown-linux-gnu
             os: ubuntu-22.04-arm
-            container: ubuntu:20.04
+            container: ubuntu:22.04
             artifact: movy-linux-arm64
             archive: tar.gz
           - target: x86_64-apple-darwin
@@ -48,23 +48,15 @@ jobs:
     runs-on: ${{ matrix.os }}
     container: ${{ matrix.container }}
     steps:
-      - name: Install container dependencies (Ubuntu 20.04)
-        if: matrix.container == 'ubuntu:20.04'
+      - name: Install Ubuntu container dependencies
+        if: matrix.container == 'ubuntu:22.04'
         shell: bash
         run: |
           apt-get update
           DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
             curl ca-certificates xz-utils sudo gnupg \
-            software-properties-common
-          # The git that ships with 20.04 (2.25.1) has sparse-checkout bugs
-          # that break move-package's git fetcher; pull a newer one from the
-          # git-core PPA.
-          add-apt-repository -y ppa:git-core/ppa
-          apt-get update
-          DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
-            git \
-            build-essential cmake pkg-config python3 \
-            libssl-dev libclang-dev clang llvm-dev
+            git build-essential cmake pkg-config python3 \
+            libssl-dev
 
       - name: Install macOS dependencies
         if: runner.os == 'macOS'
@@ -74,9 +66,27 @@ jobs:
       - name: Install Windows dependencies
         if: runner.os == 'Windows'
         shell: pwsh
-        run: choco install -y cmake llvm
+        run: choco install -y cmake
 
       - uses: actions/checkout@v4
+
+      # Vendored z3 needs C++20; Apple Clang chokes on z3's templates and
+      # the stock distro clang on older runners is too old. Install a recent
+      # LLVM toolchain everywhere except Windows (which uses MSVC) and route
+      # cc-rs / cmake through it.
+      - name: Install LLVM toolchain
+        if: runner.os != 'Windows'
+        uses: KyleMayes/install-llvm-action@v2
+        with:
+          version: "18"
+          env: true
+
+      - name: Use installed clang as C/C++ compiler
+        if: runner.os != 'Windows'
+        shell: bash
+        run: |
+          echo "CC=clang"   >> "$GITHUB_ENV"
+          echo "CXX=clang++" >> "$GITHUB_ENV"
 
       - name: Install Rust toolchain (unix)
         if: runner.os != 'Windows'
@@ -121,6 +131,12 @@ jobs:
         shell: bash
         run: |
           export PATH="$HOME/.cargo/bin:$PATH"
+          if [[ "${{ matrix.target }}" == "x86_64-apple-darwin" ]]; then
+            # Cross-compile from arm64 macOS runner -> x86_64. Tell cmake to
+            # build z3 as x86_64 and bindgen's clang to use the x86_64 SDK.
+            export CMAKE_OSX_ARCHITECTURES=x86_64
+            export BINDGEN_EXTRA_CLANG_ARGS="--target=x86_64-apple-darwin"
+          fi
           cargo build --release --locked --target "${{ matrix.target }}" -p movy
 
       - name: Build (windows)
