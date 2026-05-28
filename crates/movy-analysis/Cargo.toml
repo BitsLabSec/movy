@@ -14,7 +14,7 @@ itertools = {workspace = true}
 serde = {workspace = true}
 serde_json_any_key = {workspace = true}
 anyhow.workspace = true
-knowdit-repo-model = { path = "../../../knowdit-internal/crates/knowdit-repo-model" }
+knowdit-repo-model.workspace = true
 
 movy-sui = {workspace = true}
 movy-types = {workspace = true}
