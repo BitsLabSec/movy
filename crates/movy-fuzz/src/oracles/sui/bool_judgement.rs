@@ -80,7 +80,7 @@ fn int_has_variable(expr: &Int) -> Option<bool> {
         }
         if node.is_const()
             && let Ok(decl) = node.safe_decl()
-            && decl.kind() == DeclKind::UNINTERPRETED
+            && decl.kind() == DeclKind::Uninterpreted
         {
             return Some(true);
         }

@@ -64,45 +64,17 @@ jobs:
           DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
             git \
             build-essential cmake pkg-config python3 \
-            libssl-dev libclang-dev clang llvm-dev \
-            libz3-dev
+            libssl-dev libclang-dev clang llvm-dev
 
       - name: Install macOS dependencies
         if: runner.os == 'macOS'
         shell: bash
-        run: |
-          brew install cmake
-          if [[ "${{ matrix.target }}" == "x86_64-apple-darwin" ]]; then
-            # Cross-compile from arm64 runner -> x86_64. We need x86_64
-            # versions of native deps (z3), which means an x86_64 Homebrew
-            # under /usr/local, which itself needs Rosetta.
-            sudo softwareupdate --install-rosetta --agree-to-license || true
-            if [ ! -x /usr/local/bin/brew ]; then
-              arch -x86_64 /bin/bash -c \
-                "NONINTERACTIVE=1 /bin/bash -c \"\$(curl -fsSL https://raw.githubusercontent.com/Homebrew/install/HEAD/install.sh)\""
-            fi
-            arch -x86_64 /usr/local/bin/brew install z3
-          else
-            brew install z3
-          fi
+        run: brew install cmake
 
       - name: Install Windows dependencies
         if: runner.os == 'Windows'
         shell: pwsh
-        run: |
-          choco install -y cmake llvm
-          # Chocolatey's z3 package only ships the executable, not the dev
-          # headers / import lib that z3-sys needs. Fetch an official release
-          # and expose its paths via env vars.
-          $z3version = "4.13.4"
-          $z3url = "https://github.com/Z3Prover/z3/releases/download/z3-$z3version/z3-$z3version-x64-win.zip"
-          Invoke-WebRequest -Uri $z3url -OutFile "$env:RUNNER_TEMP\z3.zip"
-          Expand-Archive -Path "$env:RUNNER_TEMP\z3.zip" -DestinationPath "C:\z3"
-          $z3dir = (Get-ChildItem "C:\z3" -Directory | Select-Object -First 1).FullName
-          "Z3_SYS_Z3_HEADER=$z3dir\include\z3.h"                      | Out-File -FilePath $env:GITHUB_ENV -Append
-          "BINDGEN_EXTRA_CLANG_ARGS=-I$z3dir\include"                 | Out-File -FilePath $env:GITHUB_ENV -Append
-          "CARGO_TARGET_X86_64_PC_WINDOWS_MSVC_RUSTFLAGS=-L $z3dir\bin" | Out-File -FilePath $env:GITHUB_ENV -Append
-          "$z3dir\bin"                                                | Out-File -FilePath $env:GITHUB_PATH -Append
+        run: choco install -y cmake llvm
 
       - uses: actions/checkout@v4
 
@@ -149,14 +121,6 @@ jobs:
         shell: bash
         run: |
           export PATH="$HOME/.cargo/bin:$PATH"
-          if [[ "${{ matrix.target }}" == "x86_64-apple-darwin" ]]; then
-            # Cross from arm64 -> x86_64 macOS: point z3-sys & the linker at
-            # the x86_64 Homebrew prefix. Setting these env vars on other
-            # targets would force z3-sys's bindgen down the wrong path.
-            export Z3_SYS_Z3_HEADER=/usr/local/include/z3.h
-            export BINDGEN_EXTRA_CLANG_ARGS="-I/usr/local/include --target=x86_64-apple-darwin"
-            export CARGO_TARGET_X86_64_APPLE_DARWIN_RUSTFLAGS="-L /usr/local/lib"
-          fi
           cargo build --release --locked --target "${{ matrix.target }}" -p movy
 
       - name: Build (windows)

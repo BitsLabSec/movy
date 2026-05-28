@@ -75,7 +75,7 @@ fn contains_division(expr: &z3::ast::Int) -> bool {
         }
         if let Ok(decl) = node.safe_decl() {
             match decl.kind() {
-                z3::DeclKind::DIV | z3::DeclKind::IDIV => return true,
+                z3::DeclKind::Div | z3::DeclKind::Idiv => return true,
                 _ => {}
             }
         }
