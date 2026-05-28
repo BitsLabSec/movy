@@ -129,13 +129,16 @@ jobs:
       - name: Build (unix)
         if: runner.os != 'Windows'
         shell: bash
-        env:
-          # Point z3-sys / linker at the x86_64 Homebrew when cross-compiling.
-          Z3_SYS_Z3_HEADER: ${{ matrix.target == 'x86_64-apple-darwin' && '/usr/local/include/z3.h' || '' }}
-          BINDGEN_EXTRA_CLANG_ARGS: ${{ matrix.target == 'x86_64-apple-darwin' && '-I/usr/local/include --target=x86_64-apple-darwin' || '' }}
-          CARGO_TARGET_X86_64_APPLE_DARWIN_RUSTFLAGS: ${{ matrix.target == 'x86_64-apple-darwin' && '-L /usr/local/lib' || '' }}
         run: |
           export PATH="$HOME/.cargo/bin:$PATH"
+          if [[ "${{ matrix.target }}" == "x86_64-apple-darwin" ]]; then
+            # Cross from arm64 -> x86_64 macOS: point z3-sys & the linker at
+            # the x86_64 Homebrew prefix. Setting these env vars on other
+            # targets would force z3-sys's bindgen down the wrong path.
+            export Z3_SYS_Z3_HEADER=/usr/local/include/z3.h
+            export BINDGEN_EXTRA_CLANG_ARGS="-I/usr/local/include --target=x86_64-apple-darwin"
+            export CARGO_TARGET_X86_64_APPLE_DARWIN_RUSTFLAGS="-L /usr/local/lib"
+          fi
           cargo build --release --locked --target "${{ matrix.target }}" -p movy
 
       - name: Build (windows)
