@@ -1,0 +1,164 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - 'nightly-*'
+      - 'v[0-9]+.[0-9]+.[0-9]+*'
+
+permissions:
+  contents: write
+
+env:
+  RUST_TOOLCHAIN: "1.92.0"
+
+jobs:
+  build:
+    name: Build ${{ matrix.artifact }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - target: x86_64-unknown-linux-gnu
+            os: ubuntu-latest
+            container: ubuntu:20.04
+            artifact: movy-linux-amd64
+            archive: tar.gz
+          - target: aarch64-unknown-linux-gnu
+            os: ubuntu-22.04-arm
+            container: ubuntu:20.04
+            artifact: movy-linux-arm64
+            archive: tar.gz
+          - target: x86_64-apple-darwin
+            os: macos-13
+            artifact: movy-macos-amd64
+            archive: tar.gz
+          - target: aarch64-apple-darwin
+            os: macos-14
+            artifact: movy-macos-arm64
+            archive: tar.gz
+          - target: x86_64-pc-windows-msvc
+            os: windows-latest
+            artifact: movy-windows-amd64
+            archive: zip
+          - target: aarch64-pc-windows-msvc
+            os: windows-11-arm
+            artifact: movy-windows-arm64
+            archive: zip
+    runs-on: ${{ matrix.os }}
+    container: ${{ matrix.container }}
+    steps:
+      - name: Install container dependencies (Ubuntu 20.04)
+        if: matrix.container == 'ubuntu:20.04'
+        shell: bash
+        run: |
+          apt-get update
+          DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
+            curl ca-certificates git xz-utils sudo \
+            build-essential cmake pkg-config python3 \
+            libssl-dev libclang-dev clang llvm-dev \
+            libz3-dev
+
+      - name: Install macOS dependencies
+        if: runner.os == 'macOS'
+        run: brew install z3 cmake
+
+      - name: Install Windows dependencies
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          choco install -y cmake llvm
+          choco install -y z3
+
+      - uses: actions/checkout@v4
+
+      - name: Install Rust toolchain (unix)
+        if: runner.os != 'Windows'
+        shell: bash
+        run: |
+          if ! command -v rustup >/dev/null 2>&1; then
+            curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y \
+              --default-toolchain none --profile minimal --no-modify-path
+            echo "$HOME/.cargo/bin" >> "$GITHUB_PATH"
+            export PATH="$HOME/.cargo/bin:$PATH"
+          fi
+          rustup toolchain install "${RUST_TOOLCHAIN}" --profile minimal --target "${{ matrix.target }}"
+          rustup default "${RUST_TOOLCHAIN}"
+          rustup target add "${{ matrix.target }}"
+          rustc --version
+          cargo --version
+
+      - name: Install Rust toolchain (windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          rustup toolchain install $env:RUST_TOOLCHAIN --profile minimal --target ${{ matrix.target }}
+          rustup default $env:RUST_TOOLCHAIN
+          rustup target add ${{ matrix.target }}
+          rustc --version
+          cargo --version
+
+      - name: Cache cargo
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry/index
+            ~/.cargo/registry/cache
+            ~/.cargo/git/db
+            target
+          key: ${{ matrix.target }}-cargo-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: |
+            ${{ matrix.target }}-cargo-
+
+      - name: Build (unix)
+        if: runner.os != 'Windows'
+        shell: bash
+        run: |
+          export PATH="$HOME/.cargo/bin:$PATH"
+          cargo build --release --locked --target "${{ matrix.target }}" -p movy
+
+      - name: Build (windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          cargo build --release --locked --target ${{ matrix.target }} -p movy
+
+      - name: Package (tar.gz)
+        if: matrix.archive == 'tar.gz'
+        shell: bash
+        run: |
+          tar czf "${{ matrix.artifact }}.tar.gz" -C "target/${{ matrix.target }}/release" movy
+
+      - name: Package (zip)
+        if: matrix.archive == 'zip'
+        shell: pwsh
+        run: |
+          Compress-Archive -Path "target/${{ matrix.target }}/release/movy.exe" -DestinationPath "${{ matrix.artifact }}.zip"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.artifact }}
+          path: ${{ matrix.artifact }}.${{ matrix.archive }}
+          if-no-files-found: error
+
+  release:
+    name: Create GitHub release
+    needs: build
+    runs-on: ubuntu-latest
+    if: always() && !cancelled()
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: dist
+          merge-multiple: true
+
+      - name: List artifacts
+        run: ls -la dist/
+
+      - name: Create release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: dist/*
+          prerelease: ${{ startsWith(github.ref_name, 'nightly-') }}
+          generate_release_notes: true
+          fail_on_unmatched_files: false
