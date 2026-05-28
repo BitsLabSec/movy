@@ -30,9 +30,10 @@ jobs:
             artifact: movy-linux-arm64
             archive: tar.gz
           - target: x86_64-apple-darwin
-            os: macos-13
+            os: macos-14
             artifact: movy-macos-amd64
             archive: tar.gz
+            cross: true
           - target: aarch64-apple-darwin
             os: macos-14
             artifact: movy-macos-arm64
@@ -61,7 +62,22 @@ jobs:
 
       - name: Install macOS dependencies
         if: runner.os == 'macOS'
-        run: brew install z3 cmake
+        shell: bash
+        run: |
+          brew install cmake
+          if [[ "${{ matrix.target }}" == "x86_64-apple-darwin" ]]; then
+            # Cross-compile from arm64 runner -> x86_64. We need x86_64
+            # versions of native deps (z3), which means an x86_64 Homebrew
+            # under /usr/local, which itself needs Rosetta.
+            sudo softwareupdate --install-rosetta --agree-to-license || true
+            if [ ! -x /usr/local/bin/brew ]; then
+              arch -x86_64 /bin/bash -c \
+                "NONINTERACTIVE=1 /bin/bash -c \"\$(curl -fsSL https://raw.githubusercontent.com/Homebrew/install/HEAD/install.sh)\""
+            fi
+            arch -x86_64 /usr/local/bin/brew install z3
+          else
+            brew install z3
+          fi
 
       - name: Install Windows dependencies
         if: runner.os == 'Windows'
@@ -113,6 +129,11 @@ jobs:
       - name: Build (unix)
         if: runner.os != 'Windows'
         shell: bash
+        env:
+          # Point z3-sys / linker at the x86_64 Homebrew when cross-compiling.
+          Z3_SYS_Z3_HEADER: ${{ matrix.target == 'x86_64-apple-darwin' && '/usr/local/include/z3.h' || '' }}
+          BINDGEN_EXTRA_CLANG_ARGS: ${{ matrix.target == 'x86_64-apple-darwin' && '-I/usr/local/include --target=x86_64-apple-darwin' || '' }}
+          CARGO_TARGET_X86_64_APPLE_DARWIN_RUSTFLAGS: ${{ matrix.target == 'x86_64-apple-darwin' && '-L /usr/local/lib' || '' }}
         run: |
           export PATH="$HOME/.cargo/bin:$PATH"
           cargo build --release --locked --target "${{ matrix.target }}" -p movy
