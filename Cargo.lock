@@ -6123,6 +6123,7 @@ dependencies = [
 name = "movy-sui"
 version = "0.0.1"
 dependencies = [
+ "anyhow",
  "auto_impl",
  "bcs 0.1.6",
  "chrono",
