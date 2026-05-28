@@ -19,21 +19,22 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - target: x86_64-unknown-linux-gnu
+          # Linux musl static binaries via cargo-zigbuild — zig bundles its
+          # own musl + libc++, so no system clang / musl-dev / etc. is
+          # required and the resulting binary is fully static.
+          - target: x86_64-unknown-linux-musl
             os: ubuntu-latest
-            container: ubuntu:22.04
             artifact: movy-linux-amd64
             archive: tar.gz
-          - target: aarch64-unknown-linux-gnu
-            os: ubuntu-22.04-arm
-            container: ubuntu:22.04
+          - target: aarch64-unknown-linux-musl
+            os: ubuntu-24.04-arm
             artifact: movy-linux-arm64
             archive: tar.gz
           - target: x86_64-apple-darwin
             os: macos-14
             artifact: movy-macos-amd64
             archive: tar.gz
-            cross: true
+            macos_cross: true
           - target: aarch64-apple-darwin
             os: macos-14
             artifact: movy-macos-arm64
@@ -46,73 +47,50 @@ jobs:
           # one of our transitive dependencies (libafl_bolts) does not yet
           # build on that target.
     runs-on: ${{ matrix.os }}
-    container: ${{ matrix.container }}
     steps:
-      - name: Install Ubuntu container dependencies
-        if: matrix.container == 'ubuntu:22.04'
+      - name: Install Linux build deps
+        if: runner.os == 'Linux'
         shell: bash
         run: |
-          apt-get update
-          DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
-            curl ca-certificates xz-utils sudo gnupg \
-            git build-essential cmake pkg-config python3 \
-            libssl-dev
+          sudo apt-get update
+          sudo DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
+            cmake pkg-config python3 perl
 
-      - name: Install macOS dependencies
+      - name: Install macOS build deps (cmake + brew LLVM)
         if: runner.os == 'macOS'
         shell: bash
-        run: brew install cmake
+        run: |
+          brew install cmake llvm
+          LLVM_PREFIX="$(brew --prefix llvm)"
+          {
+            echo "CC=${LLVM_PREFIX}/bin/clang"
+            echo "CXX=${LLVM_PREFIX}/bin/clang++"
+            echo "PATH=${LLVM_PREFIX}/bin:${PATH}"
+          } >> "$GITHUB_ENV"
 
-      - name: Install Windows dependencies
+      - name: Install Windows build deps
         if: runner.os == 'Windows'
         shell: pwsh
         run: choco install -y cmake
 
       - uses: actions/checkout@v4
 
-      # Vendored z3 needs C++20; Apple Clang chokes on z3's templates and
-      # the stock distro clang on older runners is too old. Install a recent
-      # LLVM toolchain everywhere except Windows (which uses MSVC) and route
-      # cc-rs / cmake through it.
-      - name: Install LLVM toolchain
-        if: runner.os != 'Windows'
-        uses: KyleMayes/install-llvm-action@v2
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@master
         with:
-          version: "18"
-          env: true
+          toolchain: ${{ env.RUST_TOOLCHAIN }}
+          targets: ${{ matrix.target }}
 
-      - name: Use installed clang as C/C++ compiler
-        if: runner.os != 'Windows'
+      - name: Install zig (Linux only)
+        if: runner.os == 'Linux'
+        uses: mlugg/setup-zig@v2
+        with:
+          version: 0.13.0
+
+      - name: Install cargo-zigbuild (Linux only)
+        if: runner.os == 'Linux'
         shell: bash
-        run: |
-          echo "CC=clang"   >> "$GITHUB_ENV"
-          echo "CXX=clang++" >> "$GITHUB_ENV"
-
-      - name: Install Rust toolchain (unix)
-        if: runner.os != 'Windows'
-        shell: bash
-        run: |
-          if ! command -v rustup >/dev/null 2>&1; then
-            curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y \
-              --default-toolchain none --profile minimal --no-modify-path
-            echo "$HOME/.cargo/bin" >> "$GITHUB_PATH"
-            export PATH="$HOME/.cargo/bin:$PATH"
-          fi
-          rustup toolchain install "${RUST_TOOLCHAIN}" --profile minimal --target "${{ matrix.target }}"
-          rustup default "${RUST_TOOLCHAIN}"
-          rustup target add "${{ matrix.target }}"
-          rustc --version
-          cargo --version
-
-      - name: Install Rust toolchain (windows)
-        if: runner.os == 'Windows'
-        shell: pwsh
-        run: |
-          rustup toolchain install $env:RUST_TOOLCHAIN --profile minimal --target ${{ matrix.target }}
-          rustup default $env:RUST_TOOLCHAIN
-          rustup target add ${{ matrix.target }}
-          rustc --version
-          cargo --version
+        run: cargo install --locked cargo-zigbuild
 
       - name: Cache cargo
         uses: actions/cache@v4
@@ -126,24 +104,31 @@ jobs:
           restore-keys: |
             ${{ matrix.target }}-cargo-
 
-      - name: Build (unix)
-        if: runner.os != 'Windows'
+      - name: Build (Linux musl via zigbuild)
+        if: runner.os == 'Linux'
+        shell: bash
+        run: cargo zigbuild --release --locked --target ${{ matrix.target }} -p movy
+
+      - name: Build (macOS)
+        if: runner.os == 'macOS'
         shell: bash
         run: |
-          export PATH="$HOME/.cargo/bin:$PATH"
+          export SDKROOT="$(xcrun --sdk macosx --show-sdk-path)"
           if [[ "${{ matrix.target }}" == "x86_64-apple-darwin" ]]; then
-            # Cross-compile from arm64 macOS runner -> x86_64. Tell cmake to
-            # build z3 as x86_64 and bindgen's clang to use the x86_64 SDK.
+            # Cross-compile arm64 macOS runner -> x86_64. Tell cmake to
+            # build z3/openssl/rocksdb as x86_64 and bindgen's clang to
+            # use the x86_64 SDK.
             export CMAKE_OSX_ARCHITECTURES=x86_64
-            export BINDGEN_EXTRA_CLANG_ARGS="--target=x86_64-apple-darwin"
+            export BINDGEN_EXTRA_CLANG_ARGS="--target=x86_64-apple-darwin -isysroot ${SDKROOT}"
+          else
+            export BINDGEN_EXTRA_CLANG_ARGS="-isysroot ${SDKROOT}"
           fi
-          cargo build --release --locked --target "${{ matrix.target }}" -p movy
+          cargo build --release --locked --target ${{ matrix.target }} -p movy
 
-      - name: Build (windows)
+      - name: Build (Windows)
         if: runner.os == 'Windows'
         shell: pwsh
-        run: |
-          cargo build --release --locked --target ${{ matrix.target }} -p movy
+        run: cargo build --release --locked --target ${{ matrix.target }} -p movy
 
       - name: Package (tar.gz)
         if: matrix.archive == 'tar.gz'

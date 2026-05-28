@@ -21,6 +21,7 @@ serde_json = {workspace = true}
 itertools = {workspace = true}
 bcs = {workspace = true}
 knowdit-repo-model.workspace = true
+openssl = {workspace = true}
 
 movy-fuzz = {workspace = true}
 movy-sui = {workspace = true}
