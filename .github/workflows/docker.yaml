@@ -25,18 +25,25 @@ jobs:
           username: ${{ secrets.MOVY_DOCKER_USERNAME }}
           password: ${{ secrets.MOVY_DOCKER_PAT }}
 
-      - name: Build and push
-        if: "!startsWith(github.ref, 'refs/tags')"
+      - name: Build and push (branch)
+        if: "!startsWith(github.ref, 'refs/tags/')"
         uses: docker/build-push-action@v6
         with:
           push: ${{ github.event_name != 'pull_request' }}
           tags: movyrs/movy:latest
-      
-      - name: Build and push with github ref
-        if: "startsWith(github.ref, 'refs/tags')"
+
+      - name: Build and push (nightly tag)
+        if: "startsWith(github.ref, 'refs/tags/nightly-')"
+        uses: docker/build-push-action@v6
+        with:
+          push: true
+          tags: movyrs/movy:nightly
+
+      - name: Build and push (release tag)
+        if: "startsWith(github.ref, 'refs/tags/') && !startsWith(github.ref, 'refs/tags/nightly-')"
         uses: docker/build-push-action@v6
         with:
           push: true
           tags: |
             movyrs/movy:latest
-            movyrs/movy:${{github.ref_name}}
+            movyrs/movy:${{ github.ref_name }}
