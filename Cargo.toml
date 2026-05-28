@@ -33,7 +33,8 @@ object_store = "0.11" # sui uses this!
 byteorder = "1.5.0"
 bcs = "0.1"
 tokio-stream = "0.1"
-mdbx-derive = {version = "0.6.5"}
+mdbx-derive = {version = "0.7", default-features = false, features = ["serde_json", "bcs"]}
+rocksdb = "0.24"
 dotenvy = "0.15.7"
 bincode = { version = "2.0", features = ["serde"] }
 prometheus = "0.13.3"
@@ -61,66 +62,66 @@ tonic = "0.14"
 url = "2.5.7"
 
 # Sui dependencies
-# move-binary-format = {git = "https://github.com/wtdcode/sui", branch = "v1.65.2-fuzz"}
-# move-trace-format = {git = "https://github.com/wtdcode/sui", branch = "v1.65.2-fuzz"}
-# move-package = {git = "https://github.com/wtdcode/sui", branch = "v1.65.2-fuzz"}
-# move-compiler = {git = "https://github.com/wtdcode/sui", branch = "v1.65.2-fuzz"}
-# move-disassembler = {git = "https://github.com/wtdcode/sui", branch = "v1.65.2-fuzz"}
-# move-ir-types = {git = "https://github.com/wtdcode/sui", branch = "v1.65.2-fuzz"}
-# move-core-types = {git = "https://github.com/wtdcode/sui", branch = "v1.65.2-fuzz"}
-# move-vm-types = {git = "https://github.com/wtdcode/sui", branch = "v1.65.2-fuzz"}
-# move-vm-runtime = {git = "https://github.com/wtdcode/sui", branch = "v1.65.2-fuzz", features = ["tracing", "testing"]}
-# move-model = {git = "https://github.com/wtdcode/sui", branch = "v1.65.2-fuzz"}
-# move-stackless-bytecode = {git = "https://github.com/wtdcode/sui", branch = "v1.65.2-fuzz"}
-# sui-move-build = {git = "https://github.com/wtdcode/sui", branch = "v1.65.2-fuzz"}
-# sui-json-rpc-types = {git = "https://github.com/wtdcode/sui", branch = "v1.65.2-fuzz"}
-# sui-types = {git = "https://github.com/wtdcode/sui", branch = "v1.65.2-fuzz"}
-# move-package-alt = {git = "https://github.com/wtdcode/sui", branch = "v1.65.2-fuzz"}
-# move-package-alt-compilation = {git = "https://github.com/wtdcode/sui", branch = "v1.65.2-fuzz"}
-# sui-package-alt = {git = "https://github.com/wtdcode/sui", branch = "v1.65.2-fuzz"}
-# sui-package-management = {git = "https://github.com/wtdcode/sui", branch = "v1.65.2-fuzz"}
-# sui-sdk = {git = "https://github.com/wtdcode/sui", branch = "v1.65.2-fuzz"}
-# sui-config = {git = "https://github.com/wtdcode/sui", branch = "v1.65.2-fuzz"}
-# sui-storage = {git = "https://github.com/wtdcode/sui", branch = "v1.65.2-fuzz"}
-# sui-snapshot = {git = "https://github.com/wtdcode/sui", branch = "v1.65.2-fuzz"}
-# sui-core = {git = "https://github.com/wtdcode/sui", branch = "v1.65.2-fuzz"}
-# sui-execution = {git = "https://github.com/wtdcode/sui", branch = "v1.65.2-fuzz", features = ["testing"]}
-# shared-crypto = {git = "https://github.com/wtdcode/sui", branch = "v1.65.2-fuzz"}
-# sui-move-natives-latest = {git = "https://github.com/wtdcode/sui", branch = "v1.65.2-fuzz"}
-# sui-adapter-latest = {git = "https://github.com/wtdcode/sui", branch = "v1.65.2-fuzz"}
+move-binary-format = {git = "https://github.com/wtdcode/sui", branch = "v1.65.2-fuzz"}
+move-trace-format = {git = "https://github.com/wtdcode/sui", branch = "v1.65.2-fuzz"}
+move-package = {git = "https://github.com/wtdcode/sui", branch = "v1.65.2-fuzz"}
+move-compiler = {git = "https://github.com/wtdcode/sui", branch = "v1.65.2-fuzz"}
+move-disassembler = {git = "https://github.com/wtdcode/sui", branch = "v1.65.2-fuzz"}
+move-ir-types = {git = "https://github.com/wtdcode/sui", branch = "v1.65.2-fuzz"}
+move-core-types = {git = "https://github.com/wtdcode/sui", branch = "v1.65.2-fuzz"}
+move-vm-types = {git = "https://github.com/wtdcode/sui", branch = "v1.65.2-fuzz"}
+move-vm-runtime = {git = "https://github.com/wtdcode/sui", branch = "v1.65.2-fuzz", features = ["tracing", "testing"]}
+move-model = {git = "https://github.com/wtdcode/sui", branch = "v1.65.2-fuzz"}
+move-stackless-bytecode = {git = "https://github.com/wtdcode/sui", branch = "v1.65.2-fuzz"}
+sui-move-build = {git = "https://github.com/wtdcode/sui", branch = "v1.65.2-fuzz"}
+sui-json-rpc-types = {git = "https://github.com/wtdcode/sui", branch = "v1.65.2-fuzz"}
+sui-types = {git = "https://github.com/wtdcode/sui", branch = "v1.65.2-fuzz"}
+move-package-alt = {git = "https://github.com/wtdcode/sui", branch = "v1.65.2-fuzz"}
+move-package-alt-compilation = {git = "https://github.com/wtdcode/sui", branch = "v1.65.2-fuzz"}
+sui-package-alt = {git = "https://github.com/wtdcode/sui", branch = "v1.65.2-fuzz"}
+sui-package-management = {git = "https://github.com/wtdcode/sui", branch = "v1.65.2-fuzz"}
+sui-sdk = {git = "https://github.com/wtdcode/sui", branch = "v1.65.2-fuzz"}
+sui-config = {git = "https://github.com/wtdcode/sui", branch = "v1.65.2-fuzz"}
+sui-storage = {git = "https://github.com/wtdcode/sui", branch = "v1.65.2-fuzz"}
+sui-snapshot = {git = "https://github.com/wtdcode/sui", branch = "v1.65.2-fuzz"}
+sui-core = {git = "https://github.com/wtdcode/sui", branch = "v1.65.2-fuzz"}
+sui-execution = {git = "https://github.com/wtdcode/sui", branch = "v1.65.2-fuzz", features = ["testing"]}
+shared-crypto = {git = "https://github.com/wtdcode/sui", branch = "v1.65.2-fuzz"}
+sui-move-natives-latest = {git = "https://github.com/wtdcode/sui", branch = "v1.65.2-fuzz"}
+sui-adapter-latest = {git = "https://github.com/wtdcode/sui", branch = "v1.65.2-fuzz"}
 
 
 sui-rpc = { git = "https://github.com/MystenLabs/sui-rust-sdk.git", rev = "aef7655b45dcf3747281456f4999542dc52f6af6" }
 sui-sdk-types =  { git = "https://github.com/MystenLabs/sui-rust-sdk.git", rev = "aef7655b45dcf3747281456f4999542dc52f6af6" }
 fastcrypto = { git = "https://github.com/MystenLabs/fastcrypto", rev = "d2e2d13be3e550745739144e2a090b9675e4ffcb"} # sui use git dependency =/
 
-move-stackless-bytecode = {path = "../sui/external-crates/move/crates/move-stackless-bytecode"}
-move-model = {path = "../sui/external-crates/move/crates/move-model"}
-move-binary-format = {path = "../sui/external-crates/move/crates/move-binary-format", features = ["wasm"]}
-move-trace-format = {path = "../sui/external-crates/move/crates/move-trace-format"}
-move-package = {path = "../sui/external-crates/move/crates/move-package"}
-move-package-alt = {path = "../sui/external-crates/move/crates/move-package-alt"}
-move-package-alt-compilation = {path = "../sui/external-crates/move/crates/move-package-alt-compilation"}
-move-compiler = {path = "../sui/external-crates/move/crates/move-compiler"}
-move-disassembler = {path = "../sui/external-crates/move/crates/move-disassembler"}
-move-ir-types = {path = "../sui/external-crates/move/crates/move-ir-types"}
-move-core-types = {path = "../sui/external-crates/move/crates/move-core-types"}
-move-vm-types = {path = "../sui/external-crates/move/crates/move-vm-types"}
-move-vm-runtime = {path = "../sui/external-crates/move/crates/move-vm-runtime", features = ["tracing", "testing"]}
-sui-move-build = {path = "../sui/crates/sui-move-build"}
-sui-json-rpc-types = {path = "../sui/crates/sui-json-rpc-types"}
-sui-types = {path = "../sui/crates/sui-types"}
-sui-package-alt = {path = "../sui/crates/sui-package-alt"}
-sui-package-management = {path = "../sui/crates/sui-package-management"}
-sui-sdk = {path = "../sui/crates/sui-sdk"}
-sui-config = {path = "../sui/crates/sui-config"}
-sui-storage = {path = "../sui/crates/sui-storage"}
-sui-snapshot = {path = "../sui/crates/sui-snapshot"}
-sui-core = {path = "../sui/crates/sui-core"}
-sui-execution = {path = "../sui/sui-execution", features = ["testing"]}
-shared-crypto = {path = "../sui/crates/shared-crypto"}
-sui-move-natives-latest = {path = "../sui/sui-execution/latest/sui-move-natives/"}
-sui-adapter-latest = {path = "../sui/sui-execution/latest/sui-adapter/"}
+# move-stackless-bytecode = {path = "../sui/external-crates/move/crates/move-stackless-bytecode"}
+# move-model = {path = "../sui/external-crates/move/crates/move-model"}
+# move-binary-format = {path = "../sui/external-crates/move/crates/move-binary-format", features = ["wasm"]}
+# move-trace-format = {path = "../sui/external-crates/move/crates/move-trace-format"}
+# move-package = {path = "../sui/external-crates/move/crates/move-package"}
+# move-package-alt = {path = "../sui/external-crates/move/crates/move-package-alt"}
+# move-package-alt-compilation = {path = "../sui/external-crates/move/crates/move-package-alt-compilation"}
+# move-compiler = {path = "../sui/external-crates/move/crates/move-compiler"}
+# move-disassembler = {path = "../sui/external-crates/move/crates/move-disassembler"}
+# move-ir-types = {path = "../sui/external-crates/move/crates/move-ir-types"}
+# move-core-types = {path = "../sui/external-crates/move/crates/move-core-types"}
+# move-vm-types = {path = "../sui/external-crates/move/crates/move-vm-types"}
+# move-vm-runtime = {path = "../sui/external-crates/move/crates/move-vm-runtime", features = ["tracing", "testing"]}
+# sui-move-build = {path = "../sui/crates/sui-move-build"}
+# sui-json-rpc-types = {path = "../sui/crates/sui-json-rpc-types"}
+# sui-types = {path = "../sui/crates/sui-types"}
+# sui-package-alt = {path = "../sui/crates/sui-package-alt"}
+# sui-package-management = {path = "../sui/crates/sui-package-management"}
+# sui-sdk = {path = "../sui/crates/sui-sdk"}
+# sui-config = {path = "../sui/crates/sui-config"}
+# sui-storage = {path = "../sui/crates/sui-storage"}
+# sui-snapshot = {path = "../sui/crates/sui-snapshot"}
+# sui-core = {path = "../sui/crates/sui-core"}
+# sui-execution = {path = "../sui/sui-execution", features = ["testing"]}
+# shared-crypto = {path = "../sui/crates/shared-crypto"}
+# sui-move-natives-latest = {path = "../sui/sui-execution/latest/sui-move-natives/"}
+# sui-adapter-latest = {path = "../sui/sui-execution/latest/sui-adapter/"}
 
 # Aptos dependencies
 

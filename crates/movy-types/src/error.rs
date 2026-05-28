@@ -37,8 +37,6 @@ pub enum MovyError {
     BCS(#[from] bcs::Error),
     #[error("oss: {0}")]
     OSS(#[from] object_store::Error),
-    #[error("mdbx: {0}")]
-    MDBX(#[from] mdbx_derive::mdbx::ClientError),
     #[error("derive: {0}")]
     Derive(#[from] mdbx_derive::Error),
     #[error("sui: {0}")]

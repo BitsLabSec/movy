@@ -36,7 +36,6 @@ libafl = {workspace = true}
 libafl_bolts = {workspace = true}
 alloy-primitives = {workspace = true}
 const-hex = {workspace = true}
-mdbx-derive = {workspace = true}
 z3 = {workspace = true } 
 tokio-stream = {workspace = true}
 tempfile = {workspace = true}

@@ -26,6 +26,7 @@ chrono.workspace = true
 serde_json.workspace = true
 rand.workspace = true
 mdbx-derive.workspace = true
+rocksdb.workspace = true
 tempfile.workspace = true
 tokio-stream = {workspace = true}
 tonic = { workspace = true, features = ["zstd", "transport", "tls-webpki-roots"]}

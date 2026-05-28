@@ -2,7 +2,6 @@ use std::string::FromUtf8Error;
 
 use mdbx_derive::{
     KeyAsTableObject, KeyObject, KeyObjectDecode, KeyObjectEncode, ZstdBcsObject, ZstdJSONObject,
-    mdbx_database, mdbx_dupsort_table, mdbx_table,
 };
 use serde::{Deserialize, Serialize};
 use sui_types::{
@@ -56,10 +55,6 @@ pub struct ObjectIDVersionedKey {
     pub version: u64,
 }
 
-// Tables
-
-pub struct ObjectTable;
-
 #[derive(Debug, Clone, Serialize, Deserialize, ZstdBcsObject)]
 pub enum ObjectTableValue {
     Object(Object),
@@ -81,10 +76,6 @@ impl ObjectTableValue {
         }
     }
 }
-
-mdbx_table!(ObjectTable, ObjectIDKey, ObjectTableValue);
-
-pub struct ObjectTypeTable;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ObjectTypeKey {
@@ -116,29 +107,7 @@ impl KeyObjectDecode for ObjectTypeKey {
     }
 }
 
-impl mdbx_derive::mdbx::TableObject for ObjectTypeKey {
-    fn decode(data_val: &[u8]) -> Result<Self, mdbx_derive::mdbx::Error> {
-        Self::key_decode(data_val).map_err(|_e| mdbx_derive::mdbx::Error::Corrupted)
-    }
-}
-
-mdbx_dupsort_table!(ObjectTypeTable, ObjectTypeKey, ObjectIDKey);
-
-// Onwer could change but TransactionEffectsV1 can not track that efficiently unfortunately (no input owners)
-// Maybe build owner tables afterwards (?)
-
-// pub struct ObjectOwnerTable;
-// mdbx_dupsort_table!(ObjectOwnerTable, ObjectIDKey, ObjectIDKey);
-
 #[derive(Debug, Clone, Serialize, Deserialize, ZstdJSONObject, Default)]
 pub struct ObjectTypeDatabaseMetadata {
     pub checkpoint: u64, // exclusive!
 }
-
-mdbx_database!(
-    ObjectTypeIndexedDatabase,
-    mdbx_derive::Error,
-    ObjectTypeDatabaseMetadata,
-    ObjectTable,
-    ObjectTypeTable
-);

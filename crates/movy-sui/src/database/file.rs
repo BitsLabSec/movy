@@ -1,14 +1,14 @@
-use std::u64;
+use std::sync::Arc;
 
 use color_eyre::eyre::eyre;
 use mdbx_derive::{
-    HasMDBXEnvironment, KeyObjectEncode, MDBXDatabase, MDBXTable, ZstdBcsObject, ZstdJSONObject,
-    mdbx::{
-        BufferConfiguration, Environment, EnvironmentFlags, Geometry, Mode, PageSize, RW, SyncMode,
-        TransactionAny, TransactionKind, WriteFlags,
-    },
+    KeyObjectDecode, KeyObjectEncode, TableObjectDecode, TableObjectEncode, ZstdBcsObject,
+    ZstdJSONObject,
 };
 use movy_types::error::MovyError;
+use rocksdb::{
+    ColumnFamily, ColumnFamilyDescriptor, DB, Direction, IteratorMode, Options, WriteBatch,
+};
 use serde::{Deserialize, Serialize};
 use sui_types::{
     base_types::{ObjectID, ObjectRef, SequenceNumber, VersionNumber},
@@ -18,7 +18,6 @@ use sui_types::{
     object::Object,
     storage::{BackingPackageStore, ChildObjectResolver, ObjectStore, PackageObject, ParentSync},
 };
-use tokio_stream::StreamExt;
 use tracing::{debug, warn};
 
 use crate::{
@@ -26,11 +25,16 @@ use crate::{
     schema::{ObjectIDKey, ObjectIDVersionedKey},
 };
 
-pub struct ObjectTable;
+const CF_OBJECTS: &str = "objects";
+const META_KEY: &[u8] = b"__metadata__";
+
+fn rocks_err(e: rocksdb::Error) -> MovyError {
+    MovyError::Other(eyre!("rocksdb: {}", e))
+}
 
 #[derive(Debug, Serialize, Deserialize, ZstdJSONObject)]
 pub struct DatabaseMetadata {
-    pub checkpoint: u64, // inclusive, same from fuzz cli
+    pub checkpoint: u64,
 }
 
 #[derive(Debug, Serialize, Deserialize, ZstdBcsObject)]
@@ -38,88 +42,87 @@ pub struct PlainObjectValue {
     pub object: Object,
 }
 
-mdbx_derive::mdbx_table!(
-    ObjectTable,
-    ObjectIDVersionedKey,
-    PlainObjectValue,
-    MovyError
-);
-
-mdbx_derive::mdbx_database!(
-    ObjectCacheDatabase,
-    MovyError,
-    DatabaseMetadata,
-    ObjectTable
-);
-
-#[derive(Debug, Clone)]
-pub struct MDBXCachedStore<T> {
-    pub env: ObjectCacheDatabase,
+pub struct RocksCachedStore<T> {
+    db: Arc<DB>,
     pub ro: bool,
     pub store: T,
 }
 
-impl<T> MDBXCachedStore<T> {
-    pub async fn new(
-        db: &str,
-        store: T,
-        fork_checkpoint: u64,
-        ro: bool,
-    ) -> Result<Self, MovyError> {
-        let mut defaults = Environment::builder();
-        defaults
-            .set_flags(EnvironmentFlags {
-                mode: if ro {
-                    Mode::ReadOnly
-                } else {
-                    Mode::ReadWrite {
-                        sync_mode: SyncMode::default(),
-                    }
-                },
-                ..Default::default()
-            })
-            .set_geometry(Geometry {
-                size: Some(0usize..1024 * 1024 * 1024 * 128), // max 128G
-                growth_step: Some(64 * 1024 * 1024),          // 64 MB
-                shrink_threshold: None,
-                page_size: Some(PageSize::Set(16384)),
-            })
-            .set_max_dbs(256)
-            .set_max_readers(256);
-        let env = if ro {
-            ObjectCacheDatabase::open_tables_with_defaults(db, defaults).await?
+impl<T: std::fmt::Debug> std::fmt::Debug for RocksCachedStore<T> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("RocksCachedStore")
+            .field("ro", &self.ro)
+            .field("store", &self.store)
+            .finish_non_exhaustive()
+    }
+}
+
+impl<T: Clone> Clone for RocksCachedStore<T> {
+    fn clone(&self) -> Self {
+        Self {
+            db: self.db.clone(),
+            ro: self.ro,
+            store: self.store.clone(),
+        }
+    }
+}
+
+impl<T> RocksCachedStore<T> {
+    pub fn new(db_path: &str, store: T, fork_checkpoint: u64, ro: bool) -> Result<Self, MovyError> {
+        let db = if ro {
+            let opts = Options::default();
+            let cf_names = DB::list_cf(&opts, db_path).map_err(rocks_err)?;
+            DB::open_cf_for_read_only(&opts, db_path, &cf_names, false).map_err(rocks_err)?
         } else {
-            ObjectCacheDatabase::open_create_tables_with_defaults(db, defaults).await?
+            let mut opts = Options::default();
+            opts.create_if_missing(true);
+            opts.create_missing_column_families(true);
+            let cf_descriptors = vec![
+                ColumnFamilyDescriptor::new("default", Options::default()),
+                ColumnFamilyDescriptor::new(CF_OBJECTS, Options::default()),
+            ];
+            DB::open_cf_descriptors(&opts, db_path, cf_descriptors).map_err(rocks_err)?
         };
 
-        if let Some(meta) = env.metadata().await? {
+        if let Some(meta_bytes) = db.get(META_KEY).map_err(rocks_err)? {
+            let meta = DatabaseMetadata::table_decode(&meta_bytes)?;
             if meta.checkpoint != fork_checkpoint {
                 return Err(eyre!(
                     "cache is intended for {:?} but you want to fork {}",
-                    &meta,
+                    meta.checkpoint,
                     fork_checkpoint
                 )
                 .into());
             }
-        } else {
-            env.write_metadata(&DatabaseMetadata {
+        } else if !ro {
+            let meta = DatabaseMetadata {
                 checkpoint: fork_checkpoint,
-            })
-            .await?;
+            };
+            let encoded = meta.table_encode()?;
+            db.put(META_KEY, encoded).map_err(rocks_err)?;
         }
 
-        Ok(Self { env, ro, store })
+        Ok(Self {
+            db: Arc::new(db),
+            ro,
+            store,
+        })
     }
 
-    pub async fn dump_snapshot(&self) -> Result<CachedSnapshot, MovyError> {
-        let tx = self.env.begin_ro_txn().await?;
-        let cur = self.env.dbis.object_table_cursor(&tx).await?;
-        let mut st = cur.into_iter_buffered::<ObjectIDVersionedKey, PlainObjectValue>(
-            BufferConfiguration::default(),
-        );
+    fn cf_objects(&self) -> Result<&ColumnFamily, MovyError> {
+        self.db
+            .cf_handle(CF_OBJECTS)
+            .ok_or_else(|| eyre!("column family '{}' not found", CF_OBJECTS).into())
+    }
+
+    pub fn dump_snapshot(&self) -> Result<CachedSnapshot, MovyError> {
+        let cf = self.cf_objects()?;
+        let iter = self.db.iterator_cf(cf, IteratorMode::Start);
         let mut snap = CachedSnapshot::default();
-        while let Some(it) = st.next().await {
-            let (key, value) = it?;
+        for item in iter {
+            let (key_bytes, value_bytes) = item.map_err(rocks_err)?;
+            let key = ObjectIDVersionedKey::key_decode(&key_bytes)?;
+            let value = PlainObjectValue::table_decode(&value_bytes)?;
             snap.objects
                 .entry(key.id.into())
                 .or_default()
@@ -129,253 +132,171 @@ impl<T> MDBXCachedStore<T> {
         Ok(snap)
     }
 
-    pub async fn restore_snapshot(&self, snap: CachedSnapshot) -> Result<(), MovyError> {
+    pub fn restore_snapshot(&self, snap: CachedSnapshot) -> Result<(), MovyError> {
         if self.ro {
             return Err(eyre!("db in ro, can not restore").into());
         }
-
-        let tx = self.env.begin_rw_txn().await?;
+        let cf = self.cf_objects()?;
+        let mut batch = WriteBatch::default();
         for (_obj, obj_map) in snap.objects {
             for (_version, object) in obj_map {
                 if let Some(object) = object {
-                    self.may_cache_object_only(&tx, object).await?;
-                } else {
-                    // TODO: !
+                    let key = ObjectIDVersionedKey {
+                        id: object.id().into(),
+                        version: object.version().into(),
+                    };
+                    let key_bytes = key.key_encode()?;
+                    let value_bytes = PlainObjectValue { object }.table_encode()?;
+                    batch.put_cf(cf, &key_bytes, &value_bytes);
                 }
             }
         }
+        self.db.write(batch).map_err(rocks_err)?;
         Ok(())
     }
 
-    pub async fn may_cache_object_only(
-        &self,
-        tx: &TransactionAny<RW>,
-        object: Object,
-    ) -> Result<(), MovyError> {
-        if !self.ro {
-            debug!("[MDBXCachedStore] cache object {}", object.id());
-            ObjectTable::put_item_tx(
-                tx,
-                Some(self.env.dbis.object_table),
-                &ObjectIDVersionedKey {
-                    id: object.id().into(),
-                    version: object.version().into(),
-                },
-                &PlainObjectValue { object },
-                WriteFlags::default(),
-            )
-            .await?;
+    fn put_object(&self, object: &Object) -> Result<(), MovyError> {
+        if self.ro {
+            return Ok(());
         }
+        let cf = self.cf_objects()?;
+        let key = ObjectIDVersionedKey {
+            id: object.id().into(),
+            version: object.version().into(),
+        };
+        let key_bytes = key.key_encode()?;
+        let value_bytes = PlainObjectValue {
+            object: object.clone(),
+        }
+        .table_encode()?;
+        self.db
+            .put_cf(cf, &key_bytes, &value_bytes)
+            .map_err(rocks_err)?;
+        debug!("[RocksCachedStore] cache object {}", object.id());
         Ok(())
     }
 
-    pub async fn cache_object_and_version(
+    pub fn get_object_upperbound(
         &self,
-        tx: &TransactionAny<RW>,
-        object: Object,
-    ) -> Result<(), MovyError> {
-        if !self.ro {
-            debug!(
-                "[MDBXCachedStore] cache object with version mapping {}",
-                object.id()
-            );
-            self.may_cache_object_only(tx, object).await?;
-        }
-        Ok(())
-    }
-    pub async fn get_object_upperbound<K: TransactionKind>(
-        &self,
-        tx: &TransactionAny<K>,
         object_id: ObjectID,
         upperbound: u64,
     ) -> Result<Option<Object>, MovyError> {
+        let cf = self.cf_objects()?;
+        let target_id: ObjectIDKey = object_id.into();
+        let id_prefix = target_id.key_encode()?;
         let start_key = ObjectIDVersionedKey {
-            id: object_id.into(),
+            id: target_id,
             version: 0,
         };
-        let cur = tx.cursor_with_dbi(self.env.dbis.object_table).await?;
+        let start_bytes = start_key.key_encode()?;
 
-        let start_bs = start_key.key_encode()?;
-        let mut st = cur
-            .into_iter_from_buffered::<ObjectIDVersionedKey, PlainObjectValue>(
-                &start_bs,
-                BufferConfiguration::default(),
-            )
-            .await?;
-
-        let mut object: Option<PlainObjectValue> = None;
-        while let Some(it) = st.next().await {
-            let (key, value) = it?;
-            let key_id: ObjectID = key.id.into();
-
-            if key_id == object_id {
-                if key.version > upperbound {
-                    break;
-                }
-                object = Some(value);
+        let iter = self
+            .db
+            .iterator_cf(cf, IteratorMode::From(&start_bytes, Direction::Forward));
+        let mut result: Option<Object> = None;
+        for item in iter {
+            let (key_bytes, value_bytes) = item.map_err(rocks_err)?;
+            if !key_bytes.starts_with(&id_prefix) {
+                break;
             }
+            let key = ObjectIDVersionedKey::key_decode(&key_bytes)?;
+            if key.version > upperbound {
+                break;
+            }
+            let value = PlainObjectValue::table_decode(&value_bytes)?;
+            result = Some(value.object);
         }
-
-        Ok(object.map(|t| t.object))
+        Ok(result)
     }
 
-    pub async fn get_object_exact<K: TransactionKind>(
+    pub fn get_object_exact(
         &self,
-        tx: &TransactionAny<K>,
         object_id: ObjectID,
         exact: u64,
     ) -> Result<Option<Object>, MovyError> {
-        let object = self
-            .env
-            .dbis
-            .read_object_table_tx(
-                tx,
-                &ObjectIDVersionedKey {
-                    id: object_id.into(),
-                    version: exact,
-                },
-            )
-            .await?;
-
-        Ok(object.map(|t| t.object))
+        let cf = self.cf_objects()?;
+        let key = ObjectIDVersionedKey {
+            id: object_id.into(),
+            version: exact,
+        };
+        let key_bytes = key.key_encode()?;
+        match self.db.get_cf(cf, &key_bytes).map_err(rocks_err)? {
+            Some(data) => {
+                let value = PlainObjectValue::table_decode(&data)?;
+                Ok(Some(value.object))
+            }
+            None => Ok(None),
+        }
     }
 
-    pub async fn get_object_by_id<K: TransactionKind>(
-        &self,
-        tx: &TransactionAny<K>,
-        object_id: ObjectID,
-    ) -> Result<Option<Object>, MovyError> {
-        self.get_object_upperbound(tx, object_id, u64::MAX).await
+    pub fn get_object_by_id_db(&self, object_id: ObjectID) -> Result<Option<Object>, MovyError> {
+        self.get_object_upperbound(object_id, u64::MAX)
     }
 
-    fn get_object_by_id_sync(&self, object_id: ObjectID) -> Result<Option<Object>, MovyError> {
-        tokio::task::block_in_place(|| {
-            tokio::runtime::Handle::current().block_on(async {
-                let tx = self.env.begin_ro_txn().await?;
-                self.get_object_by_id(&tx, object_id).await
-            })
-        })
+    fn remove_all_versions(&self, id: ObjectID) -> Result<(), MovyError> {
+        if self.ro {
+            return Ok(());
+        }
+        let cf = self.cf_objects()?;
+        let target_id: ObjectIDKey = id.into();
+        let id_prefix = target_id.key_encode()?;
+        let start_key = ObjectIDVersionedKey {
+            id: target_id,
+            version: 0,
+        };
+        let start_bytes = start_key.key_encode()?;
+
+        let iter = self
+            .db
+            .iterator_cf(cf, IteratorMode::From(&start_bytes, Direction::Forward));
+        let mut batch = WriteBatch::default();
+        for item in iter {
+            let (key_bytes, _) = item.map_err(rocks_err)?;
+            if !key_bytes.starts_with(&id_prefix) {
+                break;
+            }
+            batch.delete_cf(cf, &key_bytes);
+        }
+        self.db.write(batch).map_err(rocks_err)?;
+        Ok(())
     }
 
-    fn get_object_by_id_exact_version_sync(
-        &self,
-        object_id: ObjectID,
-        version: u64,
-    ) -> Result<Option<Object>, MovyError> {
-        tokio::task::block_in_place(|| {
-            tokio::runtime::Handle::current().block_on(async {
-                let tx = self.env.begin_ro_txn().await?;
-                self.get_object_exact(&tx, object_id, version).await
-            })
-        })
-    }
-
-    fn cache_object_sync(&self, object: Object) -> Result<(), MovyError> {
-        tokio::task::block_in_place(|| {
-            tokio::runtime::Handle::current().block_on(async {
-                let tx = self.env.begin_rw_txn().await?;
-                self.cache_object_and_version(&tx, object).await?;
-                tx.commit().await?;
-                Ok(())
-            })
-        })
-    }
-
-    fn remove_object_sync(&self, id: ObjectID) -> Result<(), MovyError> {
-        tokio::task::block_in_place(|| {
-            tokio::runtime::Handle::current().block_on(async {
-                let target_key: ObjectIDKey = id.into();
-                let prefix = ObjectIDVersionedKey {
-                    id: target_key,
-                    version: 0,
-                }
-                .key_encode()?;
-                let tx = self.env.begin_rw_txn().await?;
-
-                let mut cur = tx.cursor_with_dbi(self.env.dbis.object_table).await?;
-                let mut st = cur
-                    .iter_from::<ObjectIDVersionedKey, Vec<u8>>(&prefix)
-                    .await?;
-
-                let mut to_delete = vec![];
-                // TODO: Fix mutable borrow in mdbx-remote...
-                while let Some(item) = st.next().await {
-                    let (key, _) = item?;
-                    if key.id == target_key {
-                        to_delete.push(key);
-                    } else {
-                        break;
-                    }
-                }
-                for key in to_delete {
-                    self.env.dbis.del_object_table_tx(&tx, &key, None).await?;
-                }
-
-                tx.commit().await?;
-                Ok(())
-            })
-        })
-    }
-
-    fn cache_resolver_sync(&self, object: Object, _upper: u64) -> Result<(), MovyError> {
-        tokio::task::block_in_place(|| {
-            tokio::runtime::Handle::current().block_on(async {
-                let tx = self.env.begin_rw_txn().await?;
-                self.may_cache_object_only(&tx, object).await?;
-                tx.commit().await?;
-                Ok(())
-            })
-        })
-    }
-
-    fn get_object_version_upperbound_sync(
-        &self,
-        object_id: ObjectID,
-        upper: u64,
-    ) -> Result<Option<Object>, MovyError> {
-        tokio::task::block_in_place(|| {
-            tokio::runtime::Handle::current().block_on(async {
-                let tx = self.env.begin_ro_txn().await?;
-                self.get_object_upperbound(&tx, object_id, upper).await
-            })
-        })
-    }
-
-    fn cache_object_only_sync(&self, object: Object) -> Result<(), MovyError> {
-        tokio::task::block_in_place(|| {
-            tokio::runtime::Handle::current().block_on(async {
-                let tx = self.env.begin_rw_txn().await?;
-                self.may_cache_object_only(&tx, object).await?;
-                tx.commit().await?;
-                Ok(())
-            })
-        })
+    pub fn list_object_ids(&self) -> Result<Vec<ObjectID>, MovyError> {
+        let cf = self.cf_objects()?;
+        let iter = self.db.iterator_cf(cf, IteratorMode::Start);
+        let mut out = vec![];
+        for item in iter {
+            let (key_bytes, _) = item.map_err(rocks_err)?;
+            let key = ObjectIDVersionedKey::key_decode(&key_bytes)?;
+            out.push(key.id.into());
+        }
+        Ok(out)
     }
 }
 
-impl<T: BackingPackageStore> BackingPackageStore for MDBXCachedStore<T> {
+impl<T: BackingPackageStore> BackingPackageStore for RocksCachedStore<T> {
     fn get_package_object(&self, package_id: &ObjectID) -> SuiResult<Option<PackageObject>> {
         if let Some(hit) = self
-            .get_object_by_id_sync(*package_id)
+            .get_object_by_id_db(*package_id)
             .map_err(|e| SuiError(Box::new(SuiErrorKind::Storage(e.to_string()))))?
         {
-            debug!("[MDBXCachedStore] package hit for {}", package_id);
+            debug!("[RocksCachedStore] package hit for {}", package_id);
             return Ok(Some(PackageObject::new(hit)));
         } else {
-            debug!("[MDBXCachedStore] package miss for {}", package_id);
+            debug!("[RocksCachedStore] package miss for {}", package_id);
         }
         let package = self.store.get_package_object(package_id)?;
         if let Some(pkg) = &package {
-            self.cache_object_sync(pkg.object().clone())
+            self.put_object(pkg.object())
                 .map_err(|e| SuiError(Box::new(SuiErrorKind::Storage(e.to_string()))))?;
         }
         Ok(package)
     }
 }
 
-impl<T: ObjectStore> ObjectStore for MDBXCachedStore<T> {
+impl<T: ObjectStore> ObjectStore for RocksCachedStore<T> {
     fn get_object(&self, object_id: &ObjectID) -> Option<Object> {
-        let hit = match self.get_object_by_id_sync(*object_id) {
+        let hit = match self.get_object_by_id_db(*object_id) {
             Ok(v) => v,
             Err(e) => {
                 warn!("Fail to get_object due to {}", e);
@@ -383,15 +304,15 @@ impl<T: ObjectStore> ObjectStore for MDBXCachedStore<T> {
             }
         };
         if let Some(hit) = hit {
-            debug!("[MDBXCachedStore] get_object hit for {}", object_id);
+            debug!("[RocksCachedStore] get_object hit for {}", object_id);
             return Some(hit);
         } else {
-            debug!("[MDBXCachedStore] get_object miss for {}", object_id);
+            debug!("[RocksCachedStore] get_object miss for {}", object_id);
         }
 
         let object = self.store.get_object(object_id);
         if let Some(object) = &object
-            && let Err(e) = self.cache_object_sync(object.clone())
+            && let Err(e) = self.put_object(object)
         {
             warn!("Fail to cache object due to {}", e);
         }
@@ -400,7 +321,7 @@ impl<T: ObjectStore> ObjectStore for MDBXCachedStore<T> {
     }
 
     fn get_object_by_key(&self, object_id: &ObjectID, version: VersionNumber) -> Option<Object> {
-        let hit = match self.get_object_by_id_exact_version_sync(*object_id, version.into()) {
+        let hit = match self.get_object_exact(*object_id, version.into()) {
             Ok(v) => v,
             Err(e) => {
                 warn!("Fail to get_object_by_key due to {}", e);
@@ -408,15 +329,15 @@ impl<T: ObjectStore> ObjectStore for MDBXCachedStore<T> {
             }
         };
         if let Some(hit) = hit {
-            debug!("[MDBXCachedStore] get_object hit for {}", object_id);
+            debug!("[RocksCachedStore] get_object hit for {}", object_id);
             return Some(hit);
         } else {
-            debug!("[MDBXCachedStore] get_object miss for {}", object_id);
+            debug!("[RocksCachedStore] get_object miss for {}", object_id);
         }
 
         let object = self.store.get_object_by_key(object_id, version);
         if let Some(object) = &object
-            && let Err(e) = self.cache_object_only_sync(object.clone())
+            && let Err(e) = self.put_object(object)
         {
             warn!("Fail to cache object due to {}", e);
         }
@@ -425,13 +346,13 @@ impl<T: ObjectStore> ObjectStore for MDBXCachedStore<T> {
     }
 }
 
-impl<T: ParentSync> ParentSync for MDBXCachedStore<T> {
+impl<T: ParentSync> ParentSync for RocksCachedStore<T> {
     fn get_latest_parent_entry_ref_deprecated(&self, object_id: ObjectID) -> Option<ObjectRef> {
         self.store.get_latest_parent_entry_ref_deprecated(object_id)
     }
 }
 
-impl<T: ChildObjectResolver> ChildObjectResolver for MDBXCachedStore<T> {
+impl<T: ChildObjectResolver> ChildObjectResolver for RocksCachedStore<T> {
     fn get_object_received_at_version(
         &self,
         owner: &ObjectID,
@@ -440,21 +361,18 @@ impl<T: ChildObjectResolver> ChildObjectResolver for MDBXCachedStore<T> {
         epoch_id: EpochId,
     ) -> SuiResult<Option<Object>> {
         let hit = self
-            .get_object_by_id_exact_version_sync(
-                *receiving_object_id,
-                receive_object_at_version.into(),
-            )
+            .get_object_exact(*receiving_object_id, receive_object_at_version.into())
             .map_err(|e| SuiError(Box::new(SuiErrorKind::Storage(e.to_string()))))?;
 
         if let Some(hit) = hit {
             debug!(
-                "[MDBXCachedStore] get_object_received_at_version hit for {}:{}",
+                "[RocksCachedStore] get_object_received_at_version hit for {}:{}",
                 receiving_object_id, receive_object_at_version
             );
             Ok(Some(hit))
         } else {
             debug!(
-                "[MDBXCachedStore] get_object_received_at_version miss for {}:{}",
+                "[RocksCachedStore] get_object_received_at_version miss for {}:{}",
                 receiving_object_id, receive_object_at_version
             );
             let hit = self.store.get_object_received_at_version(
@@ -464,7 +382,7 @@ impl<T: ChildObjectResolver> ChildObjectResolver for MDBXCachedStore<T> {
                 epoch_id,
             )?;
             if let Some(hit) = hit {
-                self.cache_object_only_sync(hit.clone())
+                self.put_object(&hit)
                     .map_err(|e| SuiError(Box::new(SuiErrorKind::Storage(e.to_string()))))?;
                 Ok(Some(hit))
             } else {
@@ -480,13 +398,13 @@ impl<T: ChildObjectResolver> ChildObjectResolver for MDBXCachedStore<T> {
         child_version_upper_bound: SequenceNumber,
     ) -> SuiResult<Option<Object>> {
         let hit = self
-            .get_object_version_upperbound_sync(*child, child_version_upper_bound.into())
+            .get_object_upperbound(*child, child_version_upper_bound.into())
             .map_err(|e| SuiError(Box::new(SuiErrorKind::Storage(e.to_string()))))?;
 
         if let Some(hit) = hit {
             if hit.version() == child_version_upper_bound {
                 debug!(
-                    "[MDBXCachedStore] read_child_object perfect hit for {}:{} -> {}, digest {}",
+                    "[RocksCachedStore] read_child_object perfect hit for {}:{} -> {}, digest {}",
                     child,
                     child_version_upper_bound,
                     hit.version(),
@@ -495,7 +413,7 @@ impl<T: ChildObjectResolver> ChildObjectResolver for MDBXCachedStore<T> {
                 return Ok(Some(hit));
             } else {
                 debug!(
-                    "[MDBXCachedStore] read_child_object hit {} but not ideal for {}:{}, digest {}",
+                    "[RocksCachedStore] read_child_object hit {} but not ideal for {}:{}, digest {}",
                     hit.version(),
                     child,
                     child_version_upper_bound,
@@ -504,14 +422,14 @@ impl<T: ChildObjectResolver> ChildObjectResolver for MDBXCachedStore<T> {
             }
         }
         debug!(
-            "[MDBXCachedStore] read_child_object miss for {}:{}",
+            "[RocksCachedStore] read_child_object miss for {}:{}",
             child, child_version_upper_bound
         );
         let hit = self
             .store
             .read_child_object(parent, child, child_version_upper_bound)?;
         if let Some(hit) = hit {
-            self.cache_resolver_sync(hit.clone(), child_version_upper_bound.into())
+            self.put_object(&hit)
                 .map_err(|e| SuiError(Box::new(SuiErrorKind::Storage(e.to_string()))))?;
             Ok(Some(hit))
         } else {
@@ -520,9 +438,9 @@ impl<T: ChildObjectResolver> ChildObjectResolver for MDBXCachedStore<T> {
     }
 }
 
-impl<T> ObjectSuiStoreCommit for MDBXCachedStore<T> {
+impl<T> ObjectSuiStoreCommit for RocksCachedStore<T> {
     fn commit_single_object(&self, object: Object) -> Result<(), MovyError> {
-        self.cache_object_sync(object)
+        self.put_object(&object)
     }
 
     fn commit_store(
@@ -530,9 +448,21 @@ impl<T> ObjectSuiStoreCommit for MDBXCachedStore<T> {
         mut store: sui_types::inner_temporary_store::InnerTemporaryStore,
         effects: &sui_types::effects::TransactionEffects,
     ) -> Result<(), MovyError> {
+        if self.ro {
+            return Ok(());
+        }
+        let cf = self.cf_objects()?;
+        let mut batch = WriteBatch::default();
+
         for (id, object) in store.written {
-            debug!("[MDBXCachedStore] Committing {}:{}", id, object.version());
-            self.cache_object_sync(object)?;
+            debug!("[RocksCachedStore] Committing {}:{}", id, object.version());
+            let key = ObjectIDVersionedKey {
+                id: object.id().into(),
+                version: object.version().into(),
+            };
+            let key_bytes = key.key_encode()?;
+            let value_bytes = PlainObjectValue { object }.table_encode()?;
+            batch.put_cf(cf, &key_bytes, &value_bytes);
         }
 
         for (id, version) in effects
@@ -544,10 +474,26 @@ impl<T> ObjectSuiStoreCommit for MDBXCachedStore<T> {
             .filter_map(|(id, version)| store.input_objects.remove(&id).map(|_| (id, version)))
         {
             debug!(
-                "[MDBXCachedStore] Removing deleted/transferred consensus objects {}:{}",
+                "[RocksCachedStore] Removing deleted/transferred consensus objects {}:{}",
                 id, version
             );
-            self.remove_object_sync(id)?;
+            let target_id: ObjectIDKey = id.into();
+            let id_prefix = target_id.key_encode()?;
+            let start = ObjectIDVersionedKey {
+                id: target_id,
+                version: 0,
+            }
+            .key_encode()?;
+            let iter = self
+                .db
+                .iterator_cf(cf, IteratorMode::From(&start, Direction::Forward));
+            for item in iter {
+                let (key_bytes, _) = item.map_err(rocks_err)?;
+                if !key_bytes.starts_with(&id_prefix) {
+                    break;
+                }
+                batch.delete_cf(cf, &key_bytes);
+            }
         }
 
         let smeared_version = store.lamport_version;
@@ -563,13 +509,29 @@ impl<T> ObjectSuiStoreCommit for MDBXCachedStore<T> {
                     ( (*object_id).into(), *start_version)
                 });
             debug!(
-                "[MDBXCachedStore] Removing accessed consensus objects {}:{}",
+                "[RocksCachedStore] Removing accessed consensus objects {}:{}",
                 id, smeared_version
             );
-            self.remove_object_sync(id)?;
+            let target_id: ObjectIDKey = id.into();
+            let id_prefix = target_id.key_encode()?;
+            let start = ObjectIDVersionedKey {
+                id: target_id,
+                version: 0,
+            }
+            .key_encode()?;
+            let iter = self
+                .db
+                .iterator_cf(cf, IteratorMode::From(&start, Direction::Forward));
+            for item in iter {
+                let (key_bytes, _) = item.map_err(rocks_err)?;
+                if !key_bytes.starts_with(&id_prefix) {
+                    break;
+                }
+                batch.delete_cf(cf, &key_bytes);
+            }
         }
 
-        // Optionally prune history objects?
+        self.db.write(batch).map_err(rocks_err)?;
         Ok(())
     }
 }

@@ -1,10 +1,9 @@
 use anyhow::anyhow;
 use color_eyre::eyre::eyre;
-use mdbx_derive::mdbx::BufferConfiguration;
 use movy_sui::{
     database::{
         cache::{CachedStore, ObjectSuiStoreCommit},
-        file::MDBXCachedStore,
+        file::RocksCachedStore,
     },
     schema::ObjectIDVersionedKey,
 };
@@ -20,7 +19,6 @@ use sui_types::{
     object::{MoveObject, OBJECT_START_VERSION, Object},
     storage::ObjectStore,
 };
-use tokio_stream::StreamExt;
 
 /// Abstract Sui/Aptos DB operations
 
@@ -59,32 +57,26 @@ impl<T: ObjectStore> ObjectStoreCachedStore for CachedStore<T> {
     }
 }
 
-impl<T: ObjectStore> ObjectStoreCachedStore for MDBXCachedStore<T> {
+impl<T: ObjectStore> ObjectStoreCachedStore for RocksCachedStore<T> {
     async fn load_object(&self, address: MoveAddress) -> Result<(), MovyError> {
         self.get_object(&address.into())
             .ok_or_else(|| eyre!("can not load {}", address))?;
         Ok(())
     }
     async fn list_objects(&self) -> Result<Vec<MoveAddress>, MovyError> {
-        let tx = self.env.env.begin_ro_txn().await?;
-        let cur = tx.cursor_with_dbi(self.env.dbis.object_table).await?;
-        let mut st =
-            cur.into_iter_buffered::<ObjectIDVersionedKey, Vec<_>>(BufferConfiguration::default());
-        let mut out = vec![];
-        while let Some(it) = st.next().await {
-            let it = it?;
-            let it: ObjectID = it.0.id.into();
-            out.push(MoveAddress::from(it));
-        }
-        Ok(out)
+        Ok(self
+            .list_object_ids()?
+            .into_iter()
+            .map(MoveAddress::from)
+            .collect())
     }
     async fn dump(&self) -> Result<Vec<u8>, MovyError> {
-        let snap = self.dump_snapshot().await?;
+        let snap = self.dump_snapshot()?;
         Ok(bcs::to_bytes(&snap)?)
     }
 
     async fn restore(&self, bs: Vec<u8>) -> Result<(), MovyError> {
-        self.restore_snapshot(bcs::from_bytes(&bs)?).await?;
+        self.restore_snapshot(bcs::from_bytes(&bs)?)?;
         Ok(())
     }
 }
