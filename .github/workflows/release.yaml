@@ -68,6 +68,26 @@ jobs:
             echo "PATH=${LLVM_PREFIX}/bin:${PATH}"
           } >> "$GITHUB_ENV"
 
+      - name: Disable Windows Defender real-time scanning
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          # Defender real-time scanning is the dominant cost in MSVC + cargo
+          # builds on hosted Windows runners — every .obj/.rlib/.exe spawned
+          # by cl.exe/rustc.exe/link.exe triggers a scan, and cargo touches
+          # tens of thousands of files. Disable real-time scanning and add
+          # belt-and-braces exclusions for workspace + toolchain dirs/procs.
+          Set-MpPreference -DisableRealtimeMonitoring $true                  -ErrorAction SilentlyContinue
+          Set-MpPreference -DisableArchiveScanning $true                     -ErrorAction SilentlyContinue
+          Set-MpPreference -DisableBehaviorMonitoring $true                  -ErrorAction SilentlyContinue
+          Set-MpPreference -DisableScriptScanning $true                      -ErrorAction SilentlyContinue
+          Add-MpPreference -ExclusionPath "$env:GITHUB_WORKSPACE"            -ErrorAction SilentlyContinue
+          Add-MpPreference -ExclusionPath "$env:USERPROFILE\.cargo"          -ErrorAction SilentlyContinue
+          Add-MpPreference -ExclusionPath "$env:USERPROFILE\.rustup"         -ErrorAction SilentlyContinue
+          Add-MpPreference -ExclusionPath "$env:RUNNER_TEMP"                 -ErrorAction SilentlyContinue
+          Add-MpPreference -ExclusionProcess "cargo.exe","rustc.exe","link.exe","cl.exe","lld-link.exe" -ErrorAction SilentlyContinue
+          Get-MpPreference | Select-Object DisableRealtimeMonitoring, ExclusionPath, ExclusionProcess
+
       - name: Install Windows build deps
         if: runner.os == 'Windows'
         shell: pwsh
