@@ -1,9 +1,15 @@
-use std::{collections::BTreeMap, fmt::Write, path::PathBuf, sync::Arc};
+use std::{
+    collections::{BTreeMap, VecDeque},
+    fmt::Write,
+    path::PathBuf,
+    sync::Arc,
+};
 
 use color_eyre::eyre::eyre;
 use libafl::{HasMetadata, state::HasRand};
 use libafl_bolts::serdeany::SerdeAnyMap;
 use movy_replay::{
+    db::ObjectStoreInfo,
     env::SuiTestingEnv,
     exec::SuiExecutor,
     tracer::{SelectiveTracer, TeeTracer, lcov::LineCoverageCollector, tree::TreeTracer},
@@ -11,10 +17,16 @@ use movy_replay::{
 use movy_sui::database::cache::CachedStore;
 use movy_sui::lcov::LineCoverageMap;
 use movy_types::{
+    abi::{MoveAbiSignatureToken, MoveFunctionAbi},
     error::MovyError,
-    input::{FunctionIdent, MoveSequence},
+    input::{
+        FunctionIdent, InputArgument, MoveAddress, MoveSequence, MoveTypeTag, SequenceArgument,
+        SuiObjectInputArgument,
+    },
+    object::MoveOwner,
 };
 use sui_types::{
+    digests::TransactionDigest,
     effects::TransactionEffectsAPI,
     storage::{BackingPackageStore, BackingStore, ObjectStore},
 };
@@ -90,11 +102,143 @@ fn format_execution_failure(
     out
 }
 
+/// Determine the concrete object type a parameter expects, after substituting `ty_args`, along
+/// with whether it is passed as an immutable reference (`&T`). Returns `None` for non-object
+/// parameters or generics that are not fully resolved by `ty_args`.
+fn object_param_info(
+    param: &MoveAbiSignatureToken,
+    ty_args: &BTreeMap<u16, MoveTypeTag>,
+) -> Option<(MoveTypeTag, bool)> {
+    match param {
+        MoveAbiSignatureToken::Struct { .. } | MoveAbiSignatureToken::StructInstantiation(_, _) => {
+            param.subst(ty_args).map(|ty| (ty, false))
+        }
+        MoveAbiSignatureToken::Reference(inner) => match inner.as_ref() {
+            MoveAbiSignatureToken::Struct { .. }
+            | MoveAbiSignatureToken::StructInstantiation(_, _) => {
+                inner.subst(ty_args).map(|ty| (ty, true))
+            }
+            _ => None,
+        },
+        MoveAbiSignatureToken::MutableReference(inner) => match inner.as_ref() {
+            MoveAbiSignatureToken::Struct { .. }
+            | MoveAbiSignatureToken::StructInstantiation(_, _) => {
+                inner.subst(ty_args).map(|ty| (ty, false))
+            }
+            _ => None,
+        },
+        _ => None,
+    }
+}
+
+/// Build the explicit (fixed) arguments for a test function from `--object-mapping`. For each
+/// object parameter whose type has a mapped object id (consumed in parameter order), inject the
+/// object as a PTB input and bind it to that parameter. Unmapped parameters are left for
+/// `append_function` to fill.
+fn build_test_fixed_args(
+    store: &impl ObjectStoreInfo,
+    func: &MoveFunctionAbi,
+    sequence: &mut MoveSequence,
+    remaining: &mut BTreeMap<MoveTypeTag, VecDeque<MoveAddress>>,
+    fixed_ty_args: &BTreeMap<u16, MoveTypeTag>,
+) -> Result<BTreeMap<u16, (SequenceArgument, MoveTypeTag)>, MovyError> {
+    let mut fixed = BTreeMap::new();
+    for (i, param) in func.parameters.iter().enumerate() {
+        if param.is_tx_context() {
+            continue;
+        }
+        let Some((ty, immutable_ref)) = object_param_info(param, fixed_ty_args) else {
+            continue;
+        };
+        let Some(queue) = remaining.get_mut(&ty) else {
+            continue;
+        };
+        let Some(id) = queue.pop_front() else {
+            continue;
+        };
+        let info = store.get_move_object_info(id)?;
+        let input = match info.owner {
+            MoveOwner::AddressOwner(_) | MoveOwner::Immutable => {
+                let digest: TransactionDigest = info.digest.into();
+                InputArgument::Object(
+                    info.ty.clone(),
+                    SuiObjectInputArgument::imm_or_owned_object(
+                        id,
+                        info.version,
+                        digest.into_inner(),
+                    ),
+                )
+            }
+            MoveOwner::Shared {
+                initial_shared_version,
+            } => InputArgument::Object(
+                info.ty.clone(),
+                SuiObjectInputArgument::shared_object(id, initial_shared_version, !immutable_ref),
+            ),
+            other => {
+                return Err(
+                    eyre!("--object-mapping object {id} has unsupported owner {other:?}").into(),
+                );
+            }
+        };
+        sequence.inputs.push(input);
+        let arg = SequenceArgument::Input((sequence.inputs.len() - 1) as u16);
+        fixed.insert(i as u16, (arg, ty));
+    }
+    Ok(fixed)
+}
+
+/// Decode the human-readable reason carried by a `movy::oracle::Crash` event. The event wraps a
+/// `movy::log::Log` (a list of optionally-keyed strings); `crash_because` stores the message under
+/// the `reason` key. Returns `None` if the payload doesn't decode or carries no message.
+fn decode_crash_reason(contents: &[u8]) -> Option<String> {
+    #[derive(serde::Deserialize)]
+    struct Crash {
+        reason: Log,
+    }
+    #[derive(serde::Deserialize)]
+    struct Log {
+        msg: Vec<MayKeyedString>,
+    }
+    #[derive(serde::Deserialize)]
+    struct MayKeyedString {
+        key: Option<String>,
+        value: String,
+    }
+
+    let crash: Crash = bcs::from_bytes(contents).ok()?;
+    if let Some(entry) = crash
+        .reason
+        .msg
+        .iter()
+        .find(|entry| entry.key.as_deref() == Some("reason"))
+    {
+        return Some(entry.value.clone());
+    }
+    if crash.reason.msg.is_empty() {
+        return None;
+    }
+    Some(
+        crash
+            .reason
+            .msg
+            .iter()
+            .map(|entry| match &entry.key {
+                Some(key) => format!("{key}={}", entry.value),
+                None => entry.value.clone(),
+            })
+            .collect::<Vec<_>>()
+            .join(", "),
+    )
+}
+
 pub fn test<T>(
     env: SuiTestingEnv<Arc<CachedStore<T>>>,
     meta: FuzzMetadata,
     trace: bool,
     lcov: Option<(PathBuf, LineCoverageMap)>,
+    object_mapping: BTreeMap<MoveTypeTag, Vec<MoveAddress>>,
+    type_args: BTreeMap<FunctionIdent, BTreeMap<u16, MoveTypeTag>>,
 ) -> Result<(), MovyError>
 where
     T: ObjectStore + BackingStore + BackingPackageStore + Clone + 'static,
@@ -121,13 +265,39 @@ where
         state.fuzz_env().inner().reset();
         state.fuzz_env().inner().restore_snapshot(baseline.clone());
 
+        let fixed_ty_args = type_args.get(&function).cloned().unwrap_or_default();
+        let func_abi = state
+            .fuzz_state()
+            .get_function(
+                &function.0.module_address,
+                &function.0.module_name,
+                &function.1,
+            )
+            .cloned();
+
         let mut sequence = MoveSequence::default();
+        let fixed_args = if let Some(func_abi) = &func_abi {
+            let mut remaining: BTreeMap<MoveTypeTag, VecDeque<MoveAddress>> = object_mapping
+                .iter()
+                .map(|(ty, ids)| (ty.clone(), ids.iter().copied().collect()))
+                .collect();
+            build_test_fixed_args(
+                state.fuzz_env().inner(),
+                func_abi,
+                &mut sequence,
+                &mut remaining,
+                &fixed_ty_args,
+            )?
+        } else {
+            BTreeMap::new()
+        };
+
         let built = append_function(
             &mut state,
             &mut sequence,
             &function,
-            BTreeMap::new(),
-            BTreeMap::new(),
+            fixed_args,
+            fixed_ty_args,
             &vec![],
             false,
             0,
@@ -166,6 +336,26 @@ where
                 )
             )
             .into());
+        }
+
+        // movy oracles (movy_pre_*/movy_post_*) report invariant violations by emitting a
+        // movy::oracle::Crash event rather than aborting, so a successful transaction status is
+        // not sufficient: any crash event emitted while running the test is a failure.
+        let crash_event = results.results.store.events.data.iter().find(|event| {
+            event.type_.module.as_str() == "oracle" && event.type_.name.as_str() == "Crash"
+        });
+        if let Some(crash_event) = crash_event {
+            let mut message = match decode_crash_reason(&crash_event.contents) {
+                Some(reason) => format!("oracle crash detected for {function}: {reason}"),
+                None => format!("oracle crash detected for {function}"),
+            };
+            if let Some(trace) = trace_output
+                .as_deref()
+                .filter(|trace| !trace.trim().is_empty())
+            {
+                let _ = write!(message, "\ntrace:\n{trace}");
+            }
+            return Err(eyre!("{}", message).into());
         }
 
         if trace && let Some(trace_output) = trace_output {

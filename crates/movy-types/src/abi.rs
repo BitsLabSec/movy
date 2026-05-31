@@ -278,7 +278,7 @@ impl Display for MoveAbiSignatureToken {
                     format!("<{}>", tys)
                 };
                 f.write_fmt(format_args!(
-                    "{}:{}:{}{}",
+                    "{}::{}::{}{}",
                     if f.alternate() {
                         s.module_id.module_address.short()
                     } else {
@@ -306,7 +306,7 @@ impl Display for MoveAbiSignatureToken {
                     )
                 };
                 f.write_fmt(format_args!(
-                    "{}:{}:{}{}",
+                    "{}::{}::{}{}",
                     if f.alternate() {
                         s.module_id.module_address.short()
                     } else {

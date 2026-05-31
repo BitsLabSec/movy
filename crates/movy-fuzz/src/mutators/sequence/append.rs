@@ -107,12 +107,13 @@ where
             }
         })
         .collect::<Vec<_>>();
+    // A fixed argument's concrete type can hint an otherwise-unpinned type argument at the same
+    // index, but an explicitly provided type argument (e.g. from --test-ty, or a hook mirroring
+    // its target) always wins. fixed_args is parameter-indexed while fixed_ty_args is
+    // type-parameter-indexed, so this is only a best-effort fallback for the overlapping case.
     let mut fixed_ty_args = fixed_ty_args;
     for (i, (_, ty_tag)) in fixed_args.iter() {
-        if fixed_ty_args.contains_key(i) && fixed_ty_args[i] != *ty_tag {
-            panic!("Conflicting type arguments for index {}", i);
-        }
-        fixed_ty_args.insert(*i, ty_tag.clone());
+        fixed_ty_args.entry(*i).or_insert_with(|| ty_tag.clone());
     }
     let initial_ptb_input_len = ptb.inputs.len();
     let mut inputs = match try_construct_args(

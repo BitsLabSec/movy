@@ -19,7 +19,7 @@ pub struct MoveCallGraphNode {
 impl Display for MoveCallGraphNode {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.write_fmt(format_args!(
-            "{:#}:{}:{}",
+            "{:#}::{}::{}",
             self.module_id.module_address, self.module_id.module_name, self.function
         ))
     }

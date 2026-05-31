@@ -32,6 +32,8 @@ pub(crate) type PreparedStore = Arc<CachedStore<TrivialBackStore<GraphQlDatabase
 pub(crate) struct PreparedFuzzContext {
     pub env: SuiTestingEnv<PreparedStore>,
     pub meta: FuzzMetadata,
+    /// Local package name -> deployed address, for resolving name-qualified CLI arguments.
+    pub name_mapping: BTreeMap<String, MoveAddress>,
 }
 
 fn resolve_modules(
@@ -89,20 +91,52 @@ fn resolve_function_scores(
         .map(|scores| scores.unwrap_or_default())
 }
 
-fn resolve_type_tag(
+/// Rewrite local package names that appear in an *address position* of a Move type string
+/// into their resolved addresses. An address position is the start of the string or right
+/// after `<`, `,`, `(`, or whitespace. Unlike a naive global replace, this never clobbers a
+/// module segment that happens to share the package name (e.g. `counter::counter::Counter`).
+fn rewrite_named_type_addresses(
+    raw: &str,
+    local_name_map: &BTreeMap<String, MoveAddress>,
+) -> String {
+    let chars: Vec<char> = raw.chars().collect();
+    let mut out = String::with_capacity(raw.len());
+    let mut i = 0;
+    while i < chars.len() {
+        let at_head = out
+            .chars()
+            .last()
+            .map(|c| matches!(c, '<' | ',' | '(' | ' '))
+            .unwrap_or(true);
+        if at_head && (chars[i].is_ascii_alphabetic() || chars[i] == '_') {
+            let mut j = i + 1;
+            while j < chars.len() && (chars[j].is_ascii_alphanumeric() || chars[j] == '_') {
+                j += 1;
+            }
+            // The identifier must be in an address position, i.e. followed by `::`.
+            if j + 1 < chars.len() && chars[j] == ':' && chars[j + 1] == ':' {
+                let ident: String = chars[i..j].iter().collect();
+                if let Some(addr) = local_name_map.get(&ident) {
+                    out.push_str(&addr.to_canonical_string(true));
+                    i = j; // leave the `::` to be copied on the next iteration
+                    continue;
+                }
+            }
+        }
+        out.push(chars[i]);
+        i += 1;
+    }
+    out
+}
+
+pub(crate) fn resolve_type_tag(
     raw: &str,
     local_name_map: &BTreeMap<String, MoveAddress>,
 ) -> Result<MoveTypeTag, MovyError> {
-    let resolved = MoveTypeTag::from_str(raw);
-    if resolved.is_ok() {
-        return resolved;
+    if let Ok(resolved) = MoveTypeTag::from_str(raw) {
+        return Ok(resolved);
     }
-    let mut rewritten = raw.to_string();
-    for (name, addr) in local_name_map {
-        let needle = format!("{name}::");
-        let replacement = format!("{}::", addr.to_canonical_string(true));
-        rewritten = rewritten.replace(&needle, &replacement);
-    }
+    let rewritten = rewrite_named_type_addresses(raw, local_name_map);
     MoveTypeTag::from_str(&rewritten)
 }
 
@@ -117,6 +151,48 @@ fn resolve_type_tags(
                 .collect::<Result<Vec<_>, _>>()
         })
         .transpose()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn name_map() -> BTreeMap<String, MoveAddress> {
+        let mut m = BTreeMap::new();
+        m.insert(
+            "counter".to_string(),
+            MoveAddress::from_str("0xcafe").unwrap(),
+        );
+        m
+    }
+
+    #[test]
+    fn name_position_does_not_clobber_matching_module() {
+        // Package name == module name: only the leading (address) segment must be rewritten.
+        let out = rewrite_named_type_addresses("counter::counter::Counter", &name_map());
+        assert!(out.ends_with("::counter::Counter"), "got {out}");
+        assert!(
+            !out.contains("::counter::counter::"),
+            "module segment was clobbered: {out}"
+        );
+        assert!(resolve_type_tag("counter::counter::Counter", &name_map()).is_ok());
+    }
+
+    #[test]
+    fn resolves_names_inside_generics_and_leaves_addresses() {
+        let out =
+            rewrite_named_type_addresses("0x2::coin::Coin<counter::counter::Counter>", &name_map());
+        assert!(out.starts_with("0x2::coin::Coin<"), "got {out}");
+        assert!(out.ends_with("::counter::Counter>"), "got {out}");
+    }
+
+    #[test]
+    fn plain_addresses_pass_through_unchanged() {
+        assert_eq!(
+            resolve_type_tag("0x2::sui::SUI", &name_map()).unwrap(),
+            MoveTypeTag::from_str("0x2::sui::SUI").unwrap()
+        );
+    }
 }
 
 pub(crate) async fn prepare_fuzz_context(
@@ -236,5 +312,6 @@ pub(crate) async fn prepare_fuzz_context(
     Ok(PreparedFuzzContext {
         env: testing_env,
         meta,
+        name_mapping: local_name_map,
     })
 }

@@ -13,6 +13,17 @@ fun test_counter_smoke() {
     assert!(1 + 1 == 2, 0);
 }
 
+// A generic test taking an object parameter, to exercise `movy sui test`'s argument filling:
+// `--object-mapping` fills `ctr`, and `--test-ty` pins the type parameter `T`.
+#[test]
+public fun test_increment_typed<T>(ctr: &mut Counter) {
+    // Touch T so the call carries a real type argument (supplied via --test-ty, else inferred).
+    let _ty = std::type_name::get<T>();
+    let before = counter::value(ctr);
+    counter::increment(ctr, 3);
+    assert!(counter::value(ctr) == before + 3, 300);
+}
+
 #[test]
 public fun movy_init(
     deployer: address,

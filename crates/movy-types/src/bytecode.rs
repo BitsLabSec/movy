@@ -33,7 +33,7 @@ impl MoveModuleBytecodeAnalysis {
                 MoveFunctionAbi::from_module_def(fdef, module)
             } else {
                 tracing::warn!(
-                    "Internal fcall {}:{}:{} not found",
+                    "Internal fcall {}::{}::{} not found",
                     fcall_address,
                     fcall_module_name,
                     fcall_function

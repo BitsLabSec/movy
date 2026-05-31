@@ -43,7 +43,7 @@ impl FrameTraced {
             .map(|v| v.iter().map(|t| t.to_string()).join(","))
             .unwrap_or_default();
         format!(
-            "{}:{}:{}{}({}){}",
+            "{}::{}::{}{}({}){}",
             self.open.module.address().to_canonical_string(true),
             self.open.module.name().as_str(),
             self.open.function_name,
@@ -59,7 +59,7 @@ impl FrameTraced {
 
     fn name_only_label(&self) -> String {
         format!(
-            "{}:{}:{}",
+            "{}::{}::{}",
             self.open.module.address().to_canonical_string(true),
             self.open.module.name().as_str(),
             self.open.function_name,

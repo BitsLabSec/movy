@@ -6514,6 +6514,7 @@ version = "0.0.1"
 dependencies = [
  "alloy-primitives",
  "anyhow",
+ "bcs 0.1.6",
  "color-eyre",
  "const-hex",
  "fastcrypto",

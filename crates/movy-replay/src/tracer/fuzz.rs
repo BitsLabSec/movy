@@ -426,7 +426,7 @@ where
             self.outcome.concolic.on_open_frame_inner(frame, state);
         }
         let package = format!(
-            "{}:{}:{}",
+            "{}::{}::{}",
             frame.module.address().to_canonical_string(true),
             frame.module.name(),
             &frame.function_name

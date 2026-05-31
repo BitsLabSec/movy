@@ -450,6 +450,7 @@ impl<
         verify_deps: bool,
         trace_movy_init: bool,
         onchain_fallback: bool,
+        pinned_addresses: &BTreeMap<String, MoveAddress>,
         rpc: &GraphQlDatabase,
         lcov: Option<&LineCoverageCollector>,
     ) -> Result<(MoveAddress, MovePackageAbi, MovePackageAbi, Vec<String>), MovyError> {
@@ -464,6 +465,27 @@ impl<
 
         let package_names = compiled_result.package_names.clone();
         let mut compiled_result = compiled_result.movy_mock()?;
+
+        // Resolve a fixed deployment address by matching this package's names against --deploy-at.
+        // A package deploys to a single id, so all matching names must agree on the address.
+        let pinned_address = {
+            let mut matched: Option<MoveAddress> = None;
+            for name in package_names.iter() {
+                if let Some(addr) = pinned_addresses.get(name) {
+                    if let Some(prev) = matched
+                        && prev != *addr
+                    {
+                        return Err(eyre!(
+                            "conflicting --deploy-at addresses for package {:?}",
+                            package_names
+                        )
+                        .into());
+                    }
+                    matched = Some(*addr);
+                }
+            }
+            matched
+        };
 
         // Deploy onchain deps or deps used by immediate dependencies
         if onchain_fallback {
@@ -517,7 +539,16 @@ impl<
             mock_module_address(ObjectID::ZERO, it);
         }
 
-        let module_address = ObjectID::from(module_address);
+        // When a fixed deployment address is requested, publish the package there instead of a
+        // freshly derived id. This keeps movy_init-derived object ids stable across source edits,
+        // since they descend from the (now fixed) package id rather than the publish tx digest.
+        let module_address = if let Some(pinned) = pinned_address {
+            tracing::info!("Pinning local package deployment to {}", pinned);
+            compiled_result.package_id = pinned.into();
+            ObjectID::ZERO
+        } else {
+            ObjectID::from(module_address)
+        };
         let address = if module_address == ObjectID::ZERO
             || module_address == compiled_result.package_id
         {

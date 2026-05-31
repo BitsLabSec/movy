@@ -71,6 +71,13 @@ impl SuiFuzzOneArgs {
                 })
             })
             .transpose()?;
-        sui_test::test(prepared.env, prepared.meta, self.trace, lcov)
+        sui_test::test(
+            prepared.env,
+            prepared.meta,
+            self.trace,
+            lcov,
+            Default::default(),
+            Default::default(),
+        )
     }
 }

@@ -47,6 +47,12 @@ pub struct SuiTargetArgs {
     pub onchain_fallback: bool,
     #[arg(long, help = "Trace movy_init")]
     pub trace_movy_init: bool,
+    #[arg(
+        long,
+        value_delimiter = ',',
+        help = "Publish local packages at fixed addresses instead of freshly derived ids (format: <pkg_name>:0x<address>). Keeps package ids and type strings stable across source edits. Repeatable / comma-separated; matches packages by name."
+    )]
+    pub deploy_at: Option<Vec<DeployAt>>,
     #[arg(short, long, help = "Build package with unpublished dependencies")]
     pub unpublished_dependencies: bool,
     #[arg(long, help = "Disable building dependency checks")]
@@ -145,6 +151,21 @@ impl SuiTargetArgs {
             );
         }
 
+        // --deploy-at pins listed packages (matched by name) to fixed deployment addresses.
+        let mut pin_map: BTreeMap<String, MoveAddress> = BTreeMap::new();
+        for entry in self.deploy_at.iter().flatten() {
+            if let Some(prev) = pin_map.insert(entry.name.clone(), entry.address)
+                && prev != entry.address
+            {
+                return Err(eyre!(
+                    "conflicting --deploy-at addresses for package {}",
+                    entry.name
+                )
+                .into());
+            }
+        }
+        let mut pinned_seen: BTreeSet<String> = BTreeSet::new();
+
         let mut local_abis = vec![];
         for local in resolved_locals.iter() {
             if let Some((package_name, package_addr)) = bundled_local_package_mapping(local)? {
@@ -170,17 +191,33 @@ impl SuiTargetArgs {
                     !self.disable_dependency_checks,
                     self.trace_movy_init,
                     self.onchain_fallback,
+                    &pin_map,
                     rpc,
                     lcov,
                 )
                 .await?;
             for name in package_names.iter() {
                 local_name_map.insert(name.clone(), target_package);
+                if pin_map.contains_key(name) {
+                    pinned_seen.insert(name.clone());
+                }
             }
             if is_explicit_target {
                 local_abis.push((testing_abi, abi, package_names));
                 target_packages.push(target_package);
             }
+        }
+
+        let unmatched: Vec<&String> = pin_map
+            .keys()
+            .filter(|k| !pinned_seen.contains(*k))
+            .collect();
+        if !unmatched.is_empty() {
+            return Err(eyre!(
+                "--deploy-at names did not match any deployed local package: {:?}",
+                unmatched
+            )
+            .into());
         }
 
         tracing::info!("Reload inner types...");
@@ -338,6 +375,34 @@ impl PackageSelector {
         local_name_map: &BTreeMap<String, MoveAddress>,
     ) -> Result<MoveAddress, MovyError> {
         self.0.resolve(local_name_map)
+    }
+}
+
+/// A `<pkg_name>:0x<address>` entry for `--deploy-at`, pinning a local package's deployment id.
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq, PartialOrd, Ord)]
+pub struct DeployAt {
+    pub name: String,
+    pub address: MoveAddress,
+}
+
+impl std::str::FromStr for DeployAt {
+    type Err = MovyError;
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        let (name, addr) = s.split_once(':').ok_or_else(|| {
+            MovyError::InvalidIdentifier(format!(
+                "Invalid --deploy-at entry '{s}', expected <pkg_name>:0x<address>"
+            ))
+        })?;
+        let name = name.trim().to_string();
+        if name.is_empty() {
+            return Err(MovyError::InvalidIdentifier(format!(
+                "Empty package name in --deploy-at entry '{s}'"
+            )));
+        }
+        Ok(Self {
+            name,
+            address: MoveAddress::from_str(addr.trim())?,
+        })
     }
 }
 

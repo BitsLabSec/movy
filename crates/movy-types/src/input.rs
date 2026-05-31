@@ -867,7 +867,7 @@ pub fn pprint_ptb(ptb: &ProgrammableTransaction) -> String {
                 let args = fmt_arguments(&mc.arguments);
 
                 format!(
-                    "{}:{}:{}{}({})",
+                    "{}::{}::{}{}({})",
                     &mc.package,
                     &mc.module,
                     &mc.function,
