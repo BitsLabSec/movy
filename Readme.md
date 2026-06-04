@@ -7,6 +7,7 @@
 - Modular low-level building bricks for Move language. Specifically, the executor and tracer abstractions and layered database design borrowed from [revm](https://github.com/bluealloy/revm) that allow you to emulate and inspect an execution.
 - Static analysis capabilities inherited from [MoveScan](https://dl.acm.org/doi/10.1145/3650212.3680391), the state-of-the-art static analyzer.
 - Cutting-edge fuzzing reimplemented from scratch learned from [Belobog](https://github.com/abortfuzz/belobog) that supports both property testing and on-chain fuzzing, in the a flavor similar to [foundry](https://getfoundry.sh/forge/advanced-testing/overview) by writing invariants in Move language.
+- A `forge test`-like runner (`movy sui test`) that executes your `test_*` functions and automatically fills their object and type-parameter arguments.
 - And a lot of more...
 
 Checkout our documentations at [here](https://docs.movy.rs)
@@ -85,6 +86,106 @@ public fun movy_post_increment(
     }
 }
 ```
+
+### Running Tests with `sui test`
+
+`movy sui test` builds and deploys your package, runs `movy_init`, then executes every `#[test]`
+function whose name starts with `test_` — much like `forge test`. Unlike the stock Move test
+runner, these test functions may take **parameters**, including Sui objects and type parameters,
+and `movy` fills them in for you.
+
+```move
+// test-data/counter/tests/movy.move
+#[test]
+fun test_counter_smoke() {
+    assert!(1 + 1 == 2, 0);
+}
+
+// Object and type-parameter arguments are filled by movy:
+#[test]
+public fun test_increment_typed<T>(ctr: &mut Counter) {
+    let _ty = std::type_name::get<T>();
+    let before = counter::value(ctr);
+    counter::increment(ctr, 3);
+    assert!(counter::value(ctr) == before + 3, 300);
+}
+```
+
+Run all tests in a package:
+
+```bash
+movy sui test --locals ./test-data/counter
+```
+
+#### Discover objects and pending arguments: `--only-init`
+
+`--only-init` runs `movy_init` and then prints the objects it produced together with every test
+function and the arguments it still needs — the starting point for filling them in:
+
+```bash
+movy sui test --locals ./test-data/counter --only-init
+```
+
+```
+=== objects after movy_init (3) ===
+deployer: 0xb641...
+attacker: 0xa773...
+0x95e1…  0x2::coin::Coin<0x2::sui::SUI>  [owned by 0xa773… (attacker)]  v3
+0xd726…  <pkg>::counter::Counter         [shared (v3)]                  v3
+0xdbcf…  0x2::package::UpgradeCap        [owned by 0xb641… (deployer)]  v2
+
+=== test functions ===
+<pkg>::counter_tests::test_counter_smoke()                                   [no args]
+<pkg>::counter_tests::test_increment_typed<T0>(&mut <pkg>::counter::Counter) [needs args]
+```
+
+#### Fill arguments: `--object-mapping` and `--test-ty`
+
+Bind an object parameter to a specific object, and pin a type parameter to a concrete type (use
+the object id printed by `--only-init`):
+
+```bash
+movy sui test --locals ./test-data/counter \
+  --object-mapping 'counter::counter::Counter/0xd726…e5d3' \
+  --test-ty 'counter::counter_tests::test_increment_typed:0/0x2::sui::SUI'
+```
+
+- `--object-mapping <type>/0x<object_id>` — fill an object parameter with the given object.
+  Repeatable (or comma-separated); entries of the same type are consumed in parameter order.
+- `--test-ty <pkg::module::func>:<index>/<type>` — set type parameter `<index>` of a test function.
+
+Types and function selectors accept **local package names** (e.g. `counter::counter::Counter`),
+resolved to the currently deployed address. A mapping therefore keeps working across rebuilds even
+though the deployed package id changes, and you can paste types straight out of `--only-init` or a
+`--trace`. Unmapped object/type arguments fall back to automatic, fuzzer-style filling.
+
+#### Pin deployment addresses: `--deploy-at`
+
+Object ids produced by `movy_init` are stable across source edits, but a freshly deployed package
+is assigned a new id whenever its bytecode changes — which also changes every type string
+(`<pkgid>::counter::Counter`). Pin the package to a fixed address to keep ids and type strings
+stable:
+
+```bash
+movy sui test --locals ./test-data/counter --deploy-at counter:0xcafe…
+```
+
+`--deploy-at <pkg_name>:0x<address>` is repeatable and matches packages by name.
+
+#### Failures and reproducibility
+
+A test fails (non-zero exit) when the transaction aborts, e.g. a failing `assert!`. In addition,
+your `movy_pre_*` / `movy_post_*` invariants are applied while each test runs, so an invariant
+violation reported with `crash_because` also fails the test and surfaces the reason:
+
+```
+oracle crash detected for <pkg>::counter_tests::test_increment_typed: Counter should be always increasing
+```
+
+`--seed` pins the RNG (and thus the gas object and freshly-derived package/object ids), while
+`--checkpoint` / `--epoch` / `--epoch-ms` pin the on-chain context and let the run work fully
+offline (otherwise they are fetched from `--rpc`). Pass `--trace` to print the execution trace of
+each test.
 
 ### Call Graph and Type Graph 
 
