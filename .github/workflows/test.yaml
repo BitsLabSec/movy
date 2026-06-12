@@ -1,0 +1,55 @@
+name: Fork patch guards
+
+# Runs the movy-fork-tests upgrade gate: every guard pins a semantic that one of the ./sui fork
+# patches provides, so a dropped/regressed patch turns this red. Builds against the git fork deps
+# (block (A) in Cargo.toml) so the job is self-contained — it does NOT need ./sui checked out.
+# See crates/movy-fork-tests/FORK_TESTS.md.
+
+on:
+  push:
+    branches: [master, main]
+  pull_request:
+  workflow_dispatch:
+
+concurrency:
+  group: fork-tests-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  RUST_TOOLCHAIN: "1.92.0"
+  CARGO_TERM_COLOR: always
+
+jobs:
+  fork-tests:
+    name: cargo test -p movy-fork-tests
+    runs-on: ubuntu-latest
+    # First run builds the whole sui dependency graph (~20-40 min); later runs hit the cache.
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install build deps
+        run: |
+          sudo apt-get update
+          sudo DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
+            cmake pkg-config python3 perl clang libclang-dev
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: ${{ env.RUST_TOOLCHAIN }}
+
+      - name: Cache cargo
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry/index
+            ~/.cargo/registry/cache
+            ~/.cargo/git/db
+            target
+          key: fork-tests-cargo-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: |
+            fork-tests-cargo-
+
+      - name: Run fork patch guards
+        run: cargo test -p movy-fork-tests

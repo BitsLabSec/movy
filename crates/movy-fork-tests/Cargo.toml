@@ -1,0 +1,34 @@
+[package]
+name = "movy-fork-tests"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish = false
+
+# This crate is the upgrade gate for the ./sui fork patches. Every test pins a
+# semantic that one (or a group) of the fork commits provides, so that after a
+# future rebase onto a newer upstream Sui release we can re-apply the patches and
+# run `cargo test -p movy-fork-tests` to confirm the behavior is preserved.
+# See FORK_TESTS.md for the full commit -> semantic -> guard mapping.
+
+[dependencies]
+movy-sui = { workspace = true }
+movy-replay = { workspace = true }
+movy-types = { workspace = true }
+movy-sui-stds = { workspace = true }
+
+sui-types = { workspace = true }
+move-binary-format = { workspace = true }
+move-trace-format = { workspace = true }
+move-core-types = { workspace = true }
+# #2: guards `pub mod transfer` in the v2 cut (see tests/misc.rs).
+sui-move-natives-v2 = { workspace = true }
+
+bcs = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+anyhow = { workspace = true }
+tempfile = { workspace = true }
+tracing-subscriber = { workspace = true }
+
+[dev-dependencies]

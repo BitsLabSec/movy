@@ -64,6 +64,16 @@ url = "2.5.7"
 knowdit-repo-model = "0.3"
 
 # Sui dependencies
+# The fork crates have TWO interchangeable sources. Exactly ONE block must be active.
+#  (A) git block  — DEFAULT. Self-contained: normal/CI builds and `cargo test -p movy-fork-tests`
+#      run against the pushed wtdcode/sui branch. CI only checks out this repo, so this must stay
+#      the committed default (the path block below needs ../sui present and would break CI).
+#  (B) ../sui path block — opt-in for testing the LOCAL ./sui checkout BEFORE pushing an upgrade.
+#      Comment (A) and uncomment (B) locally, run the gate, then switch back before committing.
+# The two blocks list the SAME crates with the SAME features, so toggling never changes behavior.
+# See crates/movy-fork-tests/FORK_TESTS.md.
+
+# (A) git block — ACTIVE (default):
 move-binary-format = {git = "https://github.com/wtdcode/sui", branch = "v1.65.2-fuzz"}
 move-trace-format = {git = "https://github.com/wtdcode/sui", branch = "v1.65.2-fuzz"}
 move-package = {git = "https://github.com/wtdcode/sui", branch = "v1.65.2-fuzz"}
@@ -91,29 +101,27 @@ sui-core = {git = "https://github.com/wtdcode/sui", branch = "v1.65.2-fuzz"}
 sui-execution = {git = "https://github.com/wtdcode/sui", branch = "v1.65.2-fuzz", features = ["testing"]}
 shared-crypto = {git = "https://github.com/wtdcode/sui", branch = "v1.65.2-fuzz"}
 sui-move-natives-latest = {git = "https://github.com/wtdcode/sui", branch = "v1.65.2-fuzz"}
+sui-move-natives-v2 = {git = "https://github.com/wtdcode/sui", branch = "v1.65.2-fuzz"} # movy-fork-tests: guards the v2 `pub mod transfer` patch
 sui-adapter-latest = {git = "https://github.com/wtdcode/sui", branch = "v1.65.2-fuzz"}
 
-
-sui-rpc = { git = "https://github.com/MystenLabs/sui-rust-sdk.git", rev = "aef7655b45dcf3747281456f4999542dc52f6af6" }
-sui-sdk-types =  { git = "https://github.com/MystenLabs/sui-rust-sdk.git", rev = "aef7655b45dcf3747281456f4999542dc52f6af6" }
-fastcrypto = { git = "https://github.com/MystenLabs/fastcrypto", rev = "d2e2d13be3e550745739144e2a090b9675e4ffcb"} # sui use git dependency =/
-
-# move-stackless-bytecode = {path = "../sui/external-crates/move/crates/move-stackless-bytecode"}
-# move-model = {path = "../sui/external-crates/move/crates/move-model"}
-# move-binary-format = {path = "../sui/external-crates/move/crates/move-binary-format", features = ["wasm"]}
+# (B) local ./sui path block — opt-in for pre-push upgrade testing (comment (A), uncomment this):
+# move-binary-format = {path = "../sui/external-crates/move/crates/move-binary-format"}
 # move-trace-format = {path = "../sui/external-crates/move/crates/move-trace-format"}
 # move-package = {path = "../sui/external-crates/move/crates/move-package"}
-# move-package-alt = {path = "../sui/external-crates/move/crates/move-package-alt"}
-# move-package-alt-compilation = {path = "../sui/external-crates/move/crates/move-package-alt-compilation"}
 # move-compiler = {path = "../sui/external-crates/move/crates/move-compiler"}
 # move-disassembler = {path = "../sui/external-crates/move/crates/move-disassembler"}
+# move-bytecode-source-map = {path = "../sui/external-crates/move/crates/move-bytecode-source-map"}
 # move-ir-types = {path = "../sui/external-crates/move/crates/move-ir-types"}
 # move-core-types = {path = "../sui/external-crates/move/crates/move-core-types"}
 # move-vm-types = {path = "../sui/external-crates/move/crates/move-vm-types"}
 # move-vm-runtime = {path = "../sui/external-crates/move/crates/move-vm-runtime", features = ["tracing", "testing"]}
+# move-model = {path = "../sui/external-crates/move/crates/move-model"}
+# move-stackless-bytecode = {path = "../sui/external-crates/move/crates/move-stackless-bytecode"}
 # sui-move-build = {path = "../sui/crates/sui-move-build"}
 # sui-json-rpc-types = {path = "../sui/crates/sui-json-rpc-types"}
 # sui-types = {path = "../sui/crates/sui-types"}
+# move-package-alt = {path = "../sui/external-crates/move/crates/move-package-alt"}
+# move-package-alt-compilation = {path = "../sui/external-crates/move/crates/move-package-alt-compilation"}
 # sui-package-alt = {path = "../sui/crates/sui-package-alt"}
 # sui-package-management = {path = "../sui/crates/sui-package-management"}
 # sui-sdk = {path = "../sui/crates/sui-sdk"}
@@ -124,7 +132,13 @@ fastcrypto = { git = "https://github.com/MystenLabs/fastcrypto", rev = "d2e2d13b
 # sui-execution = {path = "../sui/sui-execution", features = ["testing"]}
 # shared-crypto = {path = "../sui/crates/shared-crypto"}
 # sui-move-natives-latest = {path = "../sui/sui-execution/latest/sui-move-natives/"}
+# sui-move-natives-v2 = {path = "../sui/sui-execution/v2/sui-move-natives/"}
 # sui-adapter-latest = {path = "../sui/sui-execution/latest/sui-adapter/"}
+
+
+sui-rpc = { git = "https://github.com/MystenLabs/sui-rust-sdk.git", rev = "aef7655b45dcf3747281456f4999542dc52f6af6" }
+sui-sdk-types =  { git = "https://github.com/MystenLabs/sui-rust-sdk.git", rev = "aef7655b45dcf3747281456f4999542dc52f6af6" }
+fastcrypto = { git = "https://github.com/MystenLabs/fastcrypto", rev = "d2e2d13be3e550745739144e2a090b9675e4ffcb"} # sui use git dependency =/
 
 # Aptos dependencies
 
