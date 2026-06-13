@@ -3,7 +3,7 @@ members = ["crates/*"]
 resolver = "2"
 
 [workspace.package]
-version = "0.0.1"
+version = "0.0.3"
 edition = "2024"
 authors = [
     "Ziqiao Kong <mio@lazym.io>"
@@ -136,14 +136,14 @@ fastcrypto = { git = "https://github.com/MystenLabs/fastcrypto", rev = "d2e2d13b
 
 # Aptos dependencies
 
-movy = { version = "0.0.1", default-features = false, path = "crates/movy"}
-movy-sui = {version = "0.0.1", default-features = false, path = "crates/movy-sui"}
-movy-sui-stds = {version = "0.0.1", default-features = false, path = "crates/movy-sui-stds"}
-movy-fuzz = {version = "0.0.1", default-features = false, path = "crates/movy-fuzz"}
-movy-types = {version = "0.0.1", default-features = false, path = "crates/movy-types"}
-movy-replay = {version = "0.0.1", default-features = false, path = "crates/movy-replay"}
-movy-analysis = {version = "0.0.1", default-features = false, path = "crates/movy-analysis"}
-movy-static-analysis = {version = "0.0.1", default-features = false, path = "crates/movy-static-analysis"}
+movy = { version = "0.0.3", default-features = false, path = "crates/movy"}
+movy-sui = {version = "0.0.3", default-features = false, path = "crates/movy-sui"}
+movy-sui-stds = {version = "0.0.3", default-features = false, path = "crates/movy-sui-stds"}
+movy-fuzz = {version = "0.0.3", default-features = false, path = "crates/movy-fuzz"}
+movy-types = {version = "0.0.3", default-features = false, path = "crates/movy-types"}
+movy-replay = {version = "0.0.3", default-features = false, path = "crates/movy-replay"}
+movy-analysis = {version = "0.0.3", default-features = false, path = "crates/movy-analysis"}
+movy-static-analysis = {version = "0.0.3", default-features = false, path = "crates/movy-static-analysis"}
 
 
 [profile.dev.build-override]
