@@ -8,3 +8,4 @@ pub mod module;
 pub mod object;
 pub mod oracle;
 pub mod range;
+pub mod test_report;

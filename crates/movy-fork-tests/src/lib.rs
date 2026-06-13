@@ -20,7 +20,7 @@ use movy_replay::{
     tracer::{MovySuiTracerExt, NopTracer},
 };
 use movy_sui::{
-    compile::SuiCompiledPackage,
+    compile::{BuildIsolation, SuiCompiledPackage},
     database::{cache::CachedStore, empty::EmptyStore},
 };
 use movy_types::{
@@ -122,10 +122,14 @@ impl Harness {
         std::fs::create_dir_all(dir.path().join("sources"))?;
         let mut fp = std::fs::File::create(dir.path().join(format!("sources/{module}.move")))?;
         fp.write_all(source.as_bytes())?;
-        let pkg =
-            SuiCompiledPackage::build(dir.path(), /* test_mode */ true, /* with_unpublished */ true)
-                .with_context(|| {
-                    format!("compiling (test mode) inline package {package}::{module}")
+        let pkg = SuiCompiledPackage::build(
+            dir.path(),
+            /* test_mode */ true,
+            /* with_unpublished */ true,
+            &BuildIsolation::default(),
+        )
+        .with_context(|| {
+            format!("compiling (test mode) inline package {package}::{module}")
                 })?;
         // Test-mode modules are serialized as "unpublishable"; the publish-time deserializer
         // rejects them unless flipped to publishable. This mirrors what movy does for every

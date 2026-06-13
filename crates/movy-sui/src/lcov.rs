@@ -57,14 +57,16 @@ impl LineCoverageMap {
     pub fn for_locals(
         locals: &[PathBuf],
         test_mode: bool,
+        isolation: &crate::compile::BuildIsolation,
     ) -> Result<Option<LineCoverageMap>, MovyError> {
-        Self::for_locals_with_package_ids(locals, test_mode, &[])
+        Self::for_locals_with_package_ids(locals, test_mode, &[], isolation)
     }
 
     pub fn for_locals_with_package_ids(
         locals: &[PathBuf],
         test_mode: bool,
         package_ids: &[MoveAddress],
+        isolation: &crate::compile::BuildIsolation,
     ) -> Result<Option<LineCoverageMap>, MovyError> {
         if locals.is_empty() {
             return Ok(None);
@@ -78,7 +80,14 @@ impl LineCoverageMap {
 
         for (idx, local) in locals.iter().enumerate() {
             let local = std::fs::canonicalize(local)?;
-            let artifacts = compile_package_artifacts(&local, test_mode)?;
+            // Coverage compile redirects artifacts via install_dir but never
+            // injects extra_sources (a test file isn't part of the audited
+            // package's coverage surface).
+            let lcov_iso = crate::compile::BuildIsolation {
+                install_dir: isolation.install_dir.clone(),
+                extra_sources: vec![],
+            };
+            let artifacts = compile_package_artifacts(&local, test_mode, &lcov_iso)?;
             let package_id: MoveAddress = package_ids
                 .get(idx)
                 .copied()
@@ -169,7 +178,13 @@ impl LineCoverageMap {
         Ok(())
     }
 
-    pub fn write_lcov<I>(&self, hits: I, output: &Path) -> Result<(), MovyError>
+    /// Render an LCOV-format coverage report as a string. Pure
+    /// function over the map's static metadata + the supplied
+    /// per-run hits. Callers that want it on disk go through
+    /// [`Self::write_lcov`]; callers that want it inline (e.g.
+    /// the `--machine-output` JSON report) embed the returned
+    /// string directly.
+    pub fn render_lcov<I>(&self, hits: I) -> String
     where
         I: IntoIterator<Item = BytecodeLocation>,
     {
@@ -231,6 +246,18 @@ impl LineCoverageMap {
             writeln!(out, "end_of_record").unwrap();
         }
 
+        out
+    }
+
+    /// Convenience wrapper: render LCOV via [`Self::render_lcov`]
+    /// and write to `output`. Kept for the CLI paths
+    /// (`movy sui deploy`, `replay`, `fuzz`) that go straight to
+    /// disk without going through a [`TestRunReport`].
+    pub fn write_lcov<I>(&self, hits: I, output: &Path) -> Result<(), MovyError>
+    where
+        I: IntoIterator<Item = BytecodeLocation>,
+    {
+        let out = self.render_lcov(hits);
         std::fs::write(output, out)
             .map_err(|e| eyre!("failed to write lcov {}: {e}", output.display()).into())
     }

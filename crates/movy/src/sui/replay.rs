@@ -70,6 +70,7 @@ impl SuiReplaySeedArgs {
                 self.locals.as_deref().unwrap_or_default(),
                 true,
                 &meta.target_packages,
+                &movy_sui::compile::BuildIsolation::default(),
             )?
             .ok_or_else(|| {
                 MovyError::from(eyre!("--lcov requires at least one --locals package"))

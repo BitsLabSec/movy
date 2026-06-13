@@ -86,6 +86,7 @@ impl SuiBuildDeployArgs {
                 self.target.locals.as_deref().unwrap_or_default(),
                 true,
                 &result.target_packages_deployed,
+                &self.target.isolation.without_extra_sources(),
             )?
             .ok_or_else(|| {
                 MovyError::from(eyre!("--lcov requires at least one --locals package"))

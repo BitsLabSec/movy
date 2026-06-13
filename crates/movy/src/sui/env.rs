@@ -57,6 +57,74 @@ pub struct SuiTargetArgs {
     pub unpublished_dependencies: bool,
     #[arg(long, help = "Disable building dependency checks")]
     pub disable_dependency_checks: bool,
+    #[clap(flatten)]
+    pub isolation: BuildIsolationArgs,
+}
+
+/// CLI knobs for per-build isolation, shared by every subcommand that takes
+/// [`SuiTargetArgs`]. Both knobs (`install_dir` artifact redirection) apply
+/// either way; the two converters differ only in whether the injected
+/// `extra_sources` are included: [`Self::with_extra_sources`] (the targeted
+/// package) vs [`Self::without_extra_sources`] (dependencies / ABI /
+/// coverage). Call sites use these instead of assembling a
+/// [`movy_sui::compile::BuildIsolation`] by hand or passing a `default()`.
+#[derive(Args, Clone, Debug, Serialize, Deserialize, Default)]
+pub struct BuildIsolationArgs {
+    #[arg(
+        long,
+        help = "Redirect compiled artifacts + lockfile for ALL local packages to this directory instead of writing them next to the sources. Keeps the source tree read-only, and (because the package build lock is keyed on the output dir) lets concurrent builds of the same source with distinct install dirs run without serializing."
+    )]
+    pub install_dir: Option<PathBuf>,
+    #[arg(
+        long,
+        value_delimiter = ',',
+        help = "Extra .move source files to compile into the explicitly-listed (--locals) target package's named-address scope, on top of its own sources/. Only applied to the --locals targets, never their dependencies. Lets a driver inject a generated test without copying it into the package. Test-mode only."
+    )]
+    pub extra_sources: Option<Vec<PathBuf>>,
+}
+
+impl BuildIsolationArgs {
+    /// Build isolation **with** the injected `extra_sources`. Use for the
+    /// explicitly-targeted package — its compile gets both the artifact
+    /// redirection (`install_dir`) and the extra files.
+    pub fn with_extra_sources(&self) -> movy_sui::compile::BuildIsolation {
+        movy_sui::compile::BuildIsolation {
+            install_dir: self.install_dir.clone(),
+            extra_sources: self.extra_sources.clone().unwrap_or_default(),
+        }
+    }
+
+    /// Build isolation with the same `install_dir` artifact redirection but
+    /// **dropping** the injected `extra_sources`. Despite the name, this is
+    /// not "ignore what the user passed" — it's "this particular compile is
+    /// not the extra sources' target, so they must not go in".
+    ///
+    /// Used for every compile that is NOT the explicitly-targeted package's
+    /// test build:
+    ///
+    /// * **Transitive local dependencies.** `build_env` compiles each entry
+    ///   of `resolved_locals` (the `--locals` targets *plus* their
+    ///   `local = "../dep"` dependencies) in its own pass, and in each pass
+    ///   that package is the compile's root. The injected file is a test for
+    ///   the *target* (`module <target>::knowdit_spec_N { use <target>::...; }`)
+    ///   and won't resolve against a dependency's namespace — injecting it
+    ///   into a dependency's compile is a hard compile error. The sui-side
+    ///   `pkg.is_root() && test_mode` guard can't prevent this, because a
+    ///   dependency *is* the root of its own pass; only the caller knows it
+    ///   isn't the user-requested target (`is_explicit_target`), so the
+    ///   filtering has to happen here by handing the dependency an empty
+    ///   `extra_sources`.
+    /// * **Auxiliary compiles** — ABI extraction (`local_abis`) and coverage
+    ///   (`lcov`): the test file is neither part of the published ABI surface
+    ///   nor the coverage surface of the audited code, so it's left out.
+    ///
+    /// See [`Self::with_extra_sources`] for the one compile that does get them.
+    pub fn without_extra_sources(&self) -> movy_sui::compile::BuildIsolation {
+        movy_sui::compile::BuildIsolation {
+            install_dir: self.install_dir.clone(),
+            extra_sources: vec![],
+        }
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -86,10 +154,16 @@ impl SuiTargetArgs {
     pub fn local_abis(&self, test_mode: bool) -> Result<Vec<MovePackageAbi>, MovyError> {
         let mut out = vec![];
 
+        // ABI computation: redirect artifacts via install_dir, but never
+        // inject extra_sources here — extras are test code, not part of a
+        // package's published ABI surface.
+        let isolation = self.isolation.without_extra_sources();
         let resolved_locals =
             resolve_local_dependency_paths(self.locals.as_deref().unwrap_or_default(), test_mode)?;
         for local in resolved_locals {
-            let package = SuiCompiledPackage::build_all_unpublished_from_folder(&local, test_mode)?;
+            let package = SuiCompiledPackage::build_all_unpublished_from_folder(
+                &local, test_mode, &isolation,
+            )?;
             out.push(package.abi()?);
         }
         Ok(out)
@@ -179,6 +253,14 @@ impl SuiTargetArgs {
             }
             let is_explicit_target = explicit_locals.contains(local);
             tracing::info!("Deploying the local package at {}", local.display());
+            // install_dir applies to every local package (keep all build
+            // artifacts off the source tree); extra_sources only attach to
+            // the explicitly-targeted package(s), never their dependencies.
+            let isolation = if is_explicit_target {
+                self.isolation.with_extra_sources()
+            } else {
+                self.isolation.without_extra_sources()
+            };
             let (target_package, testing_abi, abi, package_names) = env
                 .load_local(
                     local.as_path(),
@@ -194,6 +276,7 @@ impl SuiTargetArgs {
                     &pin_map,
                     rpc,
                     lcov,
+                    &isolation,
                 )
                 .await?;
             for name in package_names.iter() {

@@ -453,14 +453,19 @@ impl<
         pinned_addresses: &BTreeMap<String, MoveAddress>,
         rpc: &GraphQlDatabase,
         lcov: Option<&LineCoverageCollector>,
+        isolation: &movy_sui::compile::BuildIsolation,
     ) -> Result<(MoveAddress, MovePackageAbi, MovePackageAbi, Vec<String>), MovyError> {
         tracing::info!("Compiling {} with non-test mode...", path.display());
-        let abi_result = SuiCompiledPackage::build_checked(path, false, unpublished, verify_deps)?;
+        // Same isolation for both passes — `extra_sources` (which carry
+        // `#[test]` / `#[test_only]` code) only gets injected by the package
+        // system in test mode, so the non-test pass safely ignores them.
+        let abi_result =
+            SuiCompiledPackage::build_checked(path, false, unpublished, verify_deps, isolation)?;
         let mut non_test_abi = abi_result.abi()?;
         tracing::info!("Compiled summary: {}", &abi_result);
         tracing::info!("Compiling {} with test mode...", path.display());
         let compiled_result =
-            SuiCompiledPackage::build_checked(path, true, unpublished, verify_deps)?;
+            SuiCompiledPackage::build_checked(path, true, unpublished, verify_deps, isolation)?;
         tracing::info!("Compiled summary: {}", &compiled_result);
 
         let package_names = compiled_result.package_names.clone();

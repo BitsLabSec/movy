@@ -597,6 +597,35 @@ impl DerefMut for FuzzMetadata {
 impl_serdeany!(FuzzMetadata);
 
 impl FuzzMetadata {
+    /// Test functions for `movy sui test`: every `test_`-prefixed function
+    /// in the testing ABIs of the target packages, deduped and sorted.
+    /// Distinct from the fuzz-side target selection
+    /// (`collect_testing_target_functions`), which keys on analyzer
+    /// metadata + `skip_function_reason` rather than a name prefix.
+    pub fn select_test_functions(&self) -> Vec<FunctionIdent> {
+        let mut functions: Vec<_> = self
+            .testing_abis
+            .iter()
+            .filter(|(package, _)| self.target_packages.contains(package))
+            .flat_map(|(package, abi)| {
+                abi.modules.iter().flat_map(move |module| {
+                    module.functions.iter().filter_map(move |function| {
+                        function.name.starts_with("test_").then(|| {
+                            FunctionIdent::new(
+                                package,
+                                &module.module_id.module_name,
+                                &function.name,
+                            )
+                        })
+                    })
+                })
+            })
+            .collect();
+        functions.sort();
+        functions.dedup();
+        functions
+    }
+
     pub async fn from_env<T>(
         env: &SuiTestingEnv<T>,
         rand: SuperRand,

@@ -7,11 +7,11 @@ use clap::{Args, Subcommand};
 use movy_types::{error::MovyError, module::MoveModule};
 
 use crate::analysis::{
-    call_graph::CallGraphArgs, export_call_graph::ExportCallGraphArgs, type_graph::TypeGraphArgs,
+    call_graph::CallGraphArgs, export_repo_info::ExportRepoInfoArgs, type_graph::TypeGraphArgs,
 };
 
 pub mod call_graph;
-pub mod export_call_graph;
+pub mod export_repo_info;
 pub mod type_graph;
 
 pub fn write_dot_may_with_pdf(dot: String, fpath: &Path) -> Result<(), MovyError> {
@@ -69,9 +69,19 @@ pub fn glob_modules(pattern: &str) -> Result<Vec<MoveModule>, MovyError> {
 
 #[derive(Subcommand)]
 pub enum AnalysisSubcommand {
+    /// DOT dump of the type graph. Visualisation only — does not
+    /// touch any project DB.
     TypeGraph(TypeGraphArgs),
+    /// DOT dump of the call graph. Visualisation only — does not
+    /// touch any project DB. The audit pipeline uses
+    /// `export-repo-info` instead.
     CallGraph(CallGraphArgs),
-    ExportCallGraph(ExportCallGraphArgs),
+    /// One-shot dumper for everything the audit pipeline needs
+    /// from a Move package: call graph + struct + function
+    /// metadata, all written into the project DB in one walk.
+    /// Future repo-level static analyses get added here, not as
+    /// new top-level subcommands.
+    ExportRepoInfo(ExportRepoInfoArgs),
 }
 
 #[derive(Args)]
@@ -85,7 +95,7 @@ impl AnlaysisArgs {
         match self.cmd {
             AnalysisSubcommand::TypeGraph(args) => args.run().await?,
             AnalysisSubcommand::CallGraph(args) => args.run().await?,
-            AnalysisSubcommand::ExportCallGraph(args) => args.run().await?,
+            AnalysisSubcommand::ExportRepoInfo(args) => args.run().await?,
         }
         Ok(())
     }

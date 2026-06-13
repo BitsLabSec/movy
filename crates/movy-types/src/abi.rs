@@ -82,7 +82,7 @@ impl From<AbilitySet> for MoveAbility {
     fn from(value: AbilitySet) -> Self {
         let mut ability = Self::empty();
         if value.has_copy() {
-            ability |= Self::DROP;
+            ability |= Self::COPY;
         }
         if value.has_key() {
             ability |= Self::KEY;
@@ -243,6 +243,31 @@ pub enum MoveAbiSignatureToken {
     // I128,
     // I256,
     // Aptos even support functions...
+}
+
+impl MoveAbiSignatureToken {
+    /// If this token *directly* names a struct (`Struct` or
+    /// `StructInstantiation`), return its handle. References,
+    /// vectors, primitives, type parameters all return `None`.
+    pub fn as_struct(&self) -> Option<&MoveStructHandle> {
+        match self {
+            Self::Struct(handle) => Some(handle),
+            Self::StructInstantiation(handle, _) => Some(handle),
+            _ => None,
+        }
+    }
+
+    /// If this token is `&T` or `&mut T` where `T` is a struct,
+    /// return the struct's handle along with whether the reference
+    /// is mutable. Non-reference tokens, or references to
+    /// non-struct types (vectors, primitives, etc.) return `None`.
+    pub fn as_struct_ref(&self) -> Option<(&MoveStructHandle, bool)> {
+        match self {
+            Self::Reference(inner) => inner.as_struct().map(|h| (h, false)),
+            Self::MutableReference(inner) => inner.as_struct().map(|h| (h, true)),
+            _ => None,
+        }
+    }
 }
 
 impl Display for MoveAbiSignatureToken {
@@ -985,6 +1010,18 @@ pub struct MoveFunctionAbi {
     pub return_paramters: Vec<MoveAbiSignatureToken>,
     pub type_parameters: Vec<MoveAbility>,
     pub visibility: MoveFunctionVisibility,
+    /// Sui `entry fun` marker. Set by [`Self::from_module_def`]
+    /// (which has the [`FunctionDefinition.is_entry`] bit
+    /// available) and defaulted to `false` by
+    /// [`Self::from_module_function_handle_visibility`], whose
+    /// caller only sees a [`FunctionHandle`] — function handles
+    /// don't carry the entry-ness flag, so external-fcall handles
+    /// are conservatively treated as non-entry. Move's audit
+    /// pipeline only cares about `is_entry` on *project*
+    /// functions (the ones we have definitions for), so this is a
+    /// safe default.
+    #[serde(default)]
+    pub is_entry: bool,
     // TODO: Aptos's acquires
 }
 
@@ -1098,12 +1135,19 @@ impl MoveFunctionAbi {
             visibility: vis,
             parameters,
             return_paramters: returns,
+            // FunctionHandle alone doesn't carry is_entry; see the
+            // field doc — external fcall handles default to false
+            // and the project's own functions get the real value
+            // via `from_module_def`.
+            is_entry: false,
         }
     }
     pub fn from_module_def(fdef: &FunctionDefinition, module: &CompiledModule) -> Self {
         let fdecl = module.function_handle_at(fdef.function);
         let vis = MoveFunctionVisibility::from(fdef.visibility);
-        Self::from_module_function_handle_visibility(fdecl, module, vis)
+        let mut abi = Self::from_module_function_handle_visibility(fdecl, module, vis);
+        abi.is_entry = fdef.is_entry;
+        abi
     }
 }
 
@@ -1146,6 +1190,19 @@ impl MoveModuleId {
         format!(
             "{}::{}",
             self.module_address.to_canonical_string(prefix),
+            self.module_name
+        )
+    }
+
+    /// `<MoveAddress::canonical_short>::<module_name>`, e.g.
+    /// `"0x2::transfer"`. The natural lookup key for matching
+    /// against the Sui standard library (`0x2::transfer`,
+    /// `0x2::dynamic_field`, …) and for cross-referencing rows
+    /// in the audit DB keyed by short module id.
+    pub fn canonical_short(&self) -> String {
+        format!(
+            "{}::{}",
+            self.module_address.canonical_short(),
             self.module_name
         )
     }

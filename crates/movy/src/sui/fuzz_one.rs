@@ -56,28 +56,62 @@ impl SuiFuzzOneArgs {
             &self.filters,
         )
         .await?;
-        let lcov = self
+        let lcov_map = self
             .lcov
             .as_ref()
-            .map(|path| {
+            .map(|_| {
                 LineCoverageMap::for_locals_with_package_ids(
                     self.target.locals.as_deref().unwrap_or_default(),
                     true,
                     &prepared.meta.target_packages,
+                    &self.target.isolation.without_extra_sources(),
                 )?
-                .map(|map| (path.clone(), map))
                 .ok_or_else(|| {
                     MovyError::from(eyre!("--lcov requires at least one --locals package"))
                 })
             })
             .transpose()?;
-        sui_test::test(
+        let report = sui_test::test(
             prepared.env,
             prepared.meta,
             self.trace,
-            lcov,
+            lcov_map,
             Default::default(),
             Default::default(),
-        )
+        )?;
+        // Mirror the embedded LCOV to the on-disk path; same string
+        // movy embedded in the report.
+        if let (Some(path), Some(lcov_text)) = (self.lcov.as_ref(), report.lcov.as_deref()) {
+            std::fs::write(path, lcov_text).map_err(|e| {
+                MovyError::from(eyre!("failed to write lcov {}: {e}", path.display()))
+            })?;
+        }
+        // Preserve `sui fuzz-one`'s historical "any failure → Err"
+        // exit contract. `--machine-output` lives on `sui test`; this
+        // path stays human-only.
+        for entry in &report.functions {
+            match &entry.outcome {
+                movy_types::test_report::Outcome::Ok => {
+                    println!("ok {}", entry.function);
+                }
+                other => {
+                    return Err(eyre!(
+                        "{}: {}",
+                        entry.function,
+                        match other {
+                            movy_types::test_report::Outcome::SequenceBuildFailure =>
+                                "unable to construct a test sequence".to_string(),
+                            movy_types::test_report::Outcome::ExecutionFailure { status_debug, .. } =>
+                                format!("execution failed (status: {status_debug})"),
+                            movy_types::test_report::Outcome::OracleCrash { reason, .. } =>
+                                format!("oracle crash: {}", reason.as_deref().unwrap_or("<no reason>")),
+                            movy_types::test_report::Outcome::Ok => unreachable!(),
+                        }
+                    )
+                    .into());
+                }
+            }
+        }
+        Ok(())
     }
 }

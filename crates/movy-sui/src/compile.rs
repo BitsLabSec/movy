@@ -26,7 +26,29 @@ use sui_package_alt::SuiFlavor;
 use sui_types::{base_types::ObjectID, is_system_package};
 use tracing::{debug, trace};
 
-fn sui_build_config(test_mode: bool) -> BuildConfig {
+/// Per-build isolation knobs threaded from the CLI ([`crate`] callers build
+/// one from `SuiTargetArgs`). Carries the two things that let many `movy sui
+/// test` processes compile the *same* source tree in parallel without copying
+/// it or trampling each other:
+///
+/// * `install_dir` — redirect this build's compiled artifacts + lockfile away
+///   from the (read-only) source tree. Because the package system keys its
+///   per-package build lock on the *output* dir, distinct install dirs also
+///   give distinct locks, so concurrent builds don't serialize.
+/// * `extra_sources` — extra `.move` files to compile into the ROOT package's
+///   named-address scope (see `make_deps_for_compiler`), e.g. a generated test
+///   injected without being copied into the package. The caller is responsible
+///   for only populating this for the package it actually means to extend
+///   (not its dependencies).
+///
+/// `Default` (both empty/none) reproduces the previous in-place build.
+#[derive(Clone, Debug, Default)]
+pub struct BuildIsolation {
+    pub install_dir: Option<PathBuf>,
+    pub extra_sources: Vec<PathBuf>,
+}
+
+fn sui_build_config(test_mode: bool, isolation: &BuildIsolation) -> BuildConfig {
     let mut cfg = move_package_alt_compilation::build_config::BuildConfig::default();
     cfg.default_flavor = Some(Flavor::Sui);
     cfg.test_mode = test_mode;
@@ -35,6 +57,9 @@ fn sui_build_config(test_mode: bool) -> BuildConfig {
     // Sui now tries to assign a few unique addresses for each unpublished modules (see `unique_hash` and `NamedAddress::Unpublished`)
     // We overrite this and request the behavior of the old version
     cfg.set_unpublished_deps_to_zero = true;
+
+    cfg.install_dir = isolation.install_dir.clone();
+    cfg.extra_source_files = isolation.extra_sources.clone();
 
     BuildConfig {
         config: cfg,
@@ -45,7 +70,9 @@ fn sui_build_config(test_mode: bool) -> BuildConfig {
 }
 
 fn load_root_package(folder: &Path, test_mode: bool) -> Result<RootPackage<SuiFlavor>, MovyError> {
-    let cfg = sui_build_config(test_mode);
+    // Dependency-order resolution only — no artifacts written, so default
+    // (in-place, no extra sources) isolation is fine.
+    let cfg = sui_build_config(test_mode, &BuildIsolation::default());
     cfg.config
         .package_loader(folder, &cfg.environment)
         .load_sync()
@@ -55,20 +82,24 @@ fn load_root_package(folder: &Path, test_mode: bool) -> Result<RootPackage<SuiFl
 pub fn compile_package_artifacts(
     folder: &Path,
     test_mode: bool,
+    isolation: &BuildIsolation,
 ) -> Result<CompiledPackage, MovyError> {
-    build_package_resolved(folder, test_mode)
+    build_package_resolved(folder, test_mode, isolation)
 }
 
 pub fn build_package_resolved(
     folder: &Path,
     test_mode: bool,
+    isolation: &BuildIsolation,
 ) -> Result<CompiledPackage, MovyError> {
-    let cfg = sui_build_config(test_mode);
+    let cfg = sui_build_config(test_mode, isolation);
     trace!("Build config is {:?}", &cfg.config);
     match cfg.build(folder) {
         Ok(package) => Ok(package),
         Err(err) => {
-            if let Ok(Some(rendered)) = render_compilation_diagnostics(folder, test_mode) {
+            if let Ok(Some(rendered)) =
+                render_compilation_diagnostics(folder, test_mode, isolation)
+            {
                 return Err(eyre!(rendered).into());
             }
             Err(err.into())
@@ -79,8 +110,9 @@ pub fn build_package_resolved(
 fn render_compilation_diagnostics(
     folder: &Path,
     test_mode: bool,
+    isolation: &BuildIsolation,
 ) -> Result<Option<String>, MovyError> {
-    let cfg = sui_build_config(test_mode);
+    let cfg = sui_build_config(test_mode, isolation);
     let mut root_pkg: RootPackage<SuiFlavor> = cfg
         .config
         .package_loader(folder, &cfg.environment)
@@ -97,8 +129,19 @@ fn render_compilation_diagnostics(
         match units_res {
             Ok((units, _warning_diags)) => Ok((files, units)),
             Err(error_diags) => {
-                let diags_buf =
-                    report_diagnostics_to_buffer(&files, error_diags, /* color */ true);
+                // Move's diagnostic renderer takes a single bool.
+                // Mirror the policy `movy::main` uses for color_eyre:
+                // colors ON only when both std streams are real TTYs
+                // and NO_COLOR isn't set. Avoids ANSI escapes leaking
+                // into piped consumers (eg. the knowdit audit pipeline
+                // which forwards panic bodies to an LLM).
+                use std::io::IsTerminal;
+                let no_color_env = std::env::var_os("NO_COLOR")
+                    .is_some_and(|v| !v.is_empty());
+                let tty = std::io::stdout().is_terminal()
+                    && std::io::stderr().is_terminal();
+                let color = tty && !no_color_env;
+                let diags_buf = report_diagnostics_to_buffer(&files, error_diags, color);
                 let rendered = String::from_utf8_lossy(&diags_buf).trim().to_string();
                 Err(anyhow!(if rendered.is_empty() {
                     "Compilation error".to_string()
@@ -309,8 +352,9 @@ impl SuiCompiledPackage {
         test_mode: bool,
         with_unpublished: bool,
         verify_deps: bool,
+        isolation: &BuildIsolation,
     ) -> Result<SuiCompiledPackage, MovyError> {
-        let artifacts = build_package_resolved(folder, test_mode)?;
+        let artifacts = build_package_resolved(folder, test_mode, isolation)?;
         debug!("artifacts dep: {:?}", artifacts.dependency_ids);
         debug!("published: {:?}", artifacts.dependency_ids.published);
 
@@ -576,8 +620,9 @@ impl SuiCompiledPackage {
         folder: &Path,
         test_mode: bool,
         with_unpublished: bool,
+        isolation: &BuildIsolation,
     ) -> Result<SuiCompiledPackage, MovyError> {
-        Self::build_checked(folder, test_mode, with_unpublished, true)
+        Self::build_checked(folder, test_mode, with_unpublished, true, isolation)
     }
 
     // This function builds all sui packages at a given folder, packaging all the
@@ -585,9 +630,10 @@ impl SuiCompiledPackage {
     pub fn build_all_unpublished_from_folder(
         folder: &Path,
         test_mode: bool,
+        isolation: &BuildIsolation,
     ) -> Result<SuiCompiledPackage, MovyError> {
         // Legacy code path
-        Self::build(folder, test_mode, true)
+        Self::build(folder, test_mode, true, isolation)
     }
 
     pub fn build_quick(package: &str, module: &str, content: &str) -> Result<Self, MovyError> {
@@ -614,7 +660,7 @@ impl SuiCompiledPackage {
         let mut fp = std::fs::File::create(dir.path().join(format!("sources/{}.move", module)))?;
         fp.write_all(content.as_bytes())?;
 
-        Self::build_all_unpublished_from_folder(dir.path(), false)
+        Self::build_all_unpublished_from_folder(dir.path(), false, &BuildIsolation::default())
     }
 }
 
@@ -626,7 +672,7 @@ mod test {
         time::{SystemTime, UNIX_EPOCH},
     };
 
-    use crate::compile::SuiCompiledPackage;
+    use crate::compile::{BuildIsolation, SuiCompiledPackage};
 
     #[test]
     fn test_build_simple() {
@@ -654,6 +700,7 @@ public fun new<T: drop, V: drop>(ctx: &mut TxContext, t2: &Test<T, V>, t: &Test<
             &PathBuf::from("/home/mio/bitslab/movy-oss/test-data/onchain/hello3"),
             false,
             true,
+            &BuildIsolation::default(),
         )
         .unwrap();
     }

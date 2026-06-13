@@ -113,6 +113,7 @@ impl SuiFuzzArgs {
                     self.target.locals.as_deref().unwrap_or_default(),
                     true,
                     &meta.target_packages,
+                    &self.target.isolation.without_extra_sources(),
                 )?
                 .map(|map| (path.clone(), map))
                 .ok_or_else(|| {

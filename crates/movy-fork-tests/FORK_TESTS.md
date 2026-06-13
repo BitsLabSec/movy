@@ -1,8 +1,9 @@
 # Fork patch guards — `./sui` upgrade playbook
 
 `movy` depends on a **fork of Sui** (`github.com/wtdcode/sui`, branch `v1.65.2-fuzz`, checked out at
-`../sui`). On top of the upstream release base (`072a211161`) the fork carries **13 commits**. When we
-rebase the fork onto a newer upstream Sui release we must re-apply those 13 patches — and be sure each
+`../sui`). On top of the upstream release base (`072a211161`) the fork carries **14 commits** (the
+last, `7b0edf70af`, adds the two build-isolation semantics movy's per-spec audit harness needs). When
+we rebase the fork onto a newer upstream Sui release we must re-apply those patches — and be sure each
 one still means the same thing. This crate is the gate: every behaviour-bearing patch has a test that
 **fails if the patch is dropped or its semantic regresses**.
 
@@ -75,6 +76,8 @@ Base: `git -C ../sui log --reverse 072a211161..HEAD`. Tests live in `tests/{trac
 | 11 | `44c5372133` | `end_transaction` **extends** input_objects across `next_tx` | `test_mode::multi_tx_test_scenario_runs_in_execution` | verified ↓ |
 | 12 | `21a1c5f944` | `ExecutionMode::targeted_deployment()` hook | `misc::targeted_deployment_pins_package_id` | by construction |
 | 13 | `0cf08add03` | protocol-config override `warn!`→`debug!` | **non-semantic (log level)** | n/a |
+| 14 | `7b0edf70af` | `install_dir` redirects build artifacts off the source tree (output-keyed build lock) | `build_isolation::install_dir_redirects_artifacts_off_source_tree` | runtime |
+| 15 | `7b0edf70af` | `extra_source_files` injected into the ROOT package's **test-mode** build | `build_isolation::extra_sources_inject_into_root_test_build` | verified (control) |
 
 `bite` legend: *compile-time* = the test crate fails to **compile** if reverted; *runtime* = a test
 assertion fails; *verified* = empirically confirmed by reverting (see per-patch notes); *by
@@ -219,6 +222,35 @@ exercised by another patch's test; *n/a* = nothing behavioural to assert.
   (`warn!` → `debug!`).
 - **What:** lowers log level for protocol-config overrides. **Non-semantic** (log noise only); no guard.
   Safe to re-apply or drop without affecting behaviour.
+
+### #14 `7b0edf70af` output-keyed build lock + install_dir artifact redirect
+- **File:** `external-crates/move/crates/move-package-alt/src/package/root_package.rs`
+  (`validate_and_construct`: lock `output_path` instead of `input_path`).
+- **What:** the per-package build lock and all written artifacts/lockfile follow the **output** dir
+  (`install_dir`), not the source dir. When `output_path != input_path` the source tree is read-only,
+  and concurrent loads of the same source with distinct output dirs no longer serialize on a shared
+  input-keyed lock. When they're equal (default in-place build) behaviour is unchanged.
+- **Why movy:** the audit harness runs many `movy sui test` processes over ONE shared, read-only
+  audited package, each with its own `--install-dir`; without this they would write into the same
+  `build/` and serialize on one lock (see `crates/movy/src/sui/env.rs` `BuildIsolationArgs`).
+- **Guard:** `build_isolation::install_dir_redirects_artifacts_off_source_tree` builds a package with
+  an `install_dir` and asserts `<source>/build` is absent while `<install_dir>/build` exists. (The
+  concurrency property itself is not unit-testable in-process; this pins the artifact-redirection
+  half the lock keying depends on.)
+
+### #15 `7b0edf70af` extra_source_files injected into the root test build
+- **Files:** `external-crates/move/crates/move-package-alt-compilation/src/build_config.rs`
+  (`extra_source_files` field) + `…/compilation.rs::make_deps_for_compiler`
+  (`if pkg.is_root() && test_mode { extend target with extra_source_files }`).
+- **What:** extra `.move` files supplied via `BuildConfig` are compiled into the ROOT package's
+  named-address scope, in **test mode only**, on top of its own `sources/`.
+- **Why movy:** lets the harness compile a generated `module <target>::knowdit_spec_N { … }` into the
+  audited package without copying it onto disk (`crates/movy-sui/src/compile.rs` `BuildIsolation`,
+  threaded from `--extra-sources`).
+- **Guard:** `build_isolation::extra_sources_inject_into_root_test_build` compiles a package whose
+  on-disk `main` does `use p::injected`, where `p::injected` exists ONLY in an extra source file — the
+  build succeeds iff the file was injected. Its control build (no extra sources) must fail, which is
+  the bite.
 
 ---
 

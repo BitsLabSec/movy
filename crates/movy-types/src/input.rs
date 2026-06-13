@@ -127,6 +127,21 @@ impl MoveAddress {
         )
     }
 
+    /// `0x` + the canonical hex with leading zeros stripped:
+    /// `0x000…0002` ⇒ `"0x2"`. Used as a stable text key in the
+    /// audit-side DB (knowdit's `contract.name` / module
+    /// lookups), matching the Move convention for well-known
+    /// addresses. A genuinely zero address renders as `"0x0"`.
+    pub fn canonical_short(&self) -> String {
+        let canonical = self.to_canonical_string(false);
+        let stripped = canonical.trim_start_matches('0');
+        if stripped.is_empty() {
+            "0x0".to_string()
+        } else {
+            format!("0x{}", stripped)
+        }
+    }
+
     pub fn from_str(s: &str) -> Result<Self, MovyError> {
         let Ok(object_id) = ObjectID::from_str(s) else {
             return Err(MovyError::InvalidIdentifier(format!(

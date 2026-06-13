@@ -20,7 +20,7 @@ fn clear_build(dir: &Path) {
 
 fn build_movy(dir: &Path) -> SuiCompiledPackage {
     clear_build(dir);
-    SuiCompiledPackage::build_all_unpublished_from_folder(dir, false).unwrap()
+    SuiCompiledPackage::build_all_unpublished_from_folder(dir, false, &movy_sui::compile::BuildIsolation::default()).unwrap()
 }
 
 fn build_std(dir: &Path, test: bool) -> Vec<SuiCompiledPackage> {
@@ -35,7 +35,7 @@ fn build_std(dir: &Path, test: bool) -> Vec<SuiCompiledPackage> {
     ] {
         let package = dir.join(package);
         clear_build(&package);
-        out.push(SuiCompiledPackage::build_checked(&package, test, false, true).unwrap());
+        out.push(SuiCompiledPackage::build_checked(&package, test, false, true, &movy_sui::compile::BuildIsolation::default()).unwrap());
     }
     out
 }

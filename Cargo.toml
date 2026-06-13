@@ -61,17 +61,11 @@ petgraph = "0.8"
 glob = "0.3.3"
 tonic = "0.14"
 url = "2.5.7"
-knowdit-repo-model = "0.3"
 
-# Sui dependencies
-# The fork crates have TWO interchangeable sources. Exactly ONE block must be active.
-#  (A) git block  — DEFAULT. Self-contained: normal/CI builds and `cargo test -p movy-fork-tests`
-#      run against the pushed wtdcode/sui branch. CI only checks out this repo, so this must stay
-#      the committed default (the path block below needs ../sui present and would break CI).
-#  (B) ../sui path block — opt-in for testing the LOCAL ./sui checkout BEFORE pushing an upgrade.
-#      Comment (A) and uncomment (B) locally, run the gate, then switch back before committing.
-# The two blocks list the SAME crates with the SAME features, so toggling never changes behavior.
-# See crates/movy-fork-tests/FORK_TESTS.md.
+
+# knowdit-repo-model = { path = "../knowdit/crates/knowdit-repo-model", version = "0.4" }
+knowdit-repo-model = "0.6"
+
 
 # (A) git block — ACTIVE (default):
 move-binary-format = {git = "https://github.com/wtdcode/sui", branch = "v1.65.2-fuzz"}

@@ -28,8 +28,24 @@ async fn main_entry() {
 }
 
 fn main() {
-    let use_colors = std::io::stdout().is_terminal() && std::io::stderr().is_terminal();
-    color_eyre::install().unwrap();
+    // Respect the NO_COLOR convention (https://no-color.org) — any
+    // non-empty value disables colors. Also disable when either of
+    // stdout / stderr is not a TTY (so output piped into another
+    // process is plain text). The combined flag drives both the
+    // panic display (color_eyre) and the tracing subscriber.
+    let no_color_env = std::env::var_os("NO_COLOR").is_some_and(|v| !v.is_empty());
+    let tty = std::io::stdout().is_terminal() && std::io::stderr().is_terminal();
+    let use_colors = tty && !no_color_env;
+    if use_colors {
+        color_eyre::install().unwrap();
+    } else {
+        // `Theme::new()` is the no-styling theme — every span style
+        // collapses to a no-op so panic display is plain text.
+        color_eyre::config::HookBuilder::new()
+            .theme(color_eyre::config::Theme::new())
+            .install()
+            .unwrap();
+    }
     if let Ok(dot_file) = std::env::var("DOT") {
         dotenvy::from_path(dot_file).expect("can not read dotenvy");
     } else {

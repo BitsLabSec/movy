@@ -53,6 +53,11 @@ pub struct SuiTestArgs {
     pub lcov: Option<PathBuf>,
     #[arg(
         long,
+        help = "Write per-function structured results as JSON to this path. Schema is movy_types::test_report::TestRunReport (current version: 2; LCOV embedded in `lcov` field). When set, the command always exits 0 — callers consume pass/fail via the JSON instead of the process exit code."
+    )]
+    pub machine_output: Option<PathBuf>,
+    #[arg(
+        long,
         help = "Only run movy_init, then print the resulting objects and the test functions awaiting arguments, and exit"
     )]
     pub only_init: bool,
@@ -92,35 +97,86 @@ impl SuiTestArgs {
             )
             .await;
         }
-        let lcov = self
-            .lcov
-            .as_ref()
-            .map(|path| {
-                LineCoverageMap::for_locals_with_package_ids(
-                    self.target.locals.as_deref().unwrap_or_default(),
-                    true,
-                    &meta.target_packages,
-                )?
-                .map(|map| (path.clone(), map))
-                .ok_or_else(|| {
-                    MovyError::from(eyre!("--lcov requires at least one --locals package"))
-                })
+        // Build the coverage map up front when `--lcov` was passed
+        // OR when `--machine-output` is set (machine consumers always
+        // want LCOV embedded). The actual on-disk write is deferred
+        // until after the report comes back so the embedded `lcov`
+        // field and the standalone file are guaranteed bit-identical.
+        let lcov_map = if self.lcov.is_some() || self.machine_output.is_some() {
+            // Same install_dir isolation as the build above, so the coverage
+            // compile also keeps artifacts off the (shared, read-only) source
+            // tree. No extra_sources here (test files aren't coverage surface).
+            LineCoverageMap::for_locals_with_package_ids(
+                self.target.locals.as_deref().unwrap_or_default(),
+                true,
+                &meta.target_packages,
+                &self.target.isolation.without_extra_sources(),
+            )?
+            .ok_or_else(|| {
+                MovyError::from(eyre!(
+                    "--lcov / --machine-output coverage requires at least one --locals package"
+                ))
             })
-            .transpose()?;
+            .map(Some)
+            .or_else(|err| {
+                // Only `--lcov` failures are user errors; if only
+                // `--machine-output` was set, missing locals just
+                // means no coverage in the JSON, not a hard fail.
+                if self.lcov.is_some() {
+                    Err(err)
+                } else {
+                    Ok(None)
+                }
+            })?
+        } else {
+            None
+        };
 
         let object_mapping =
             resolve_object_mapping(&self.object_mapping, &prepared.name_mapping, &prepared.env)?;
         let type_args = resolve_test_ty(&self.test_ty, &prepared.name_mapping, &meta)?;
 
-        meta.target_functions = select_test_functions(&meta);
-        sui_test::test(
+        meta.target_functions = meta.select_test_functions();
+        let report = sui_test::test(
             prepared.env,
             meta,
             self.trace,
-            lcov,
+            lcov_map,
             object_mapping,
             type_args,
-        )
+        )?;
+
+        // Mirror the embedded LCOV to the on-disk path when the user
+        // asked for it. Both forms come from the same `render_lcov`
+        // call inside `sui_test::test`, so they cannot drift.
+        if let (Some(path), Some(lcov_text)) = (self.lcov.as_ref(), report.lcov.as_deref()) {
+            std::fs::write(path, lcov_text).map_err(|e| {
+                MovyError::from(eyre!("failed to write lcov {}: {e}", path.display()))
+            })?;
+        }
+
+        if let Some(path) = self.machine_output.as_ref() {
+            // Machine-output mode: the JSON IS the result channel.
+            // The CLI exits 0 regardless of per-function outcomes —
+            // callers (knowdit-move's MovyHarness) decide pass/fail
+            // by inspecting `report.summary` after deserializing.
+            report.write_machine(path)?;
+        } else {
+            // Human-output mode: preserve historical CLI behavior —
+            // one "ok" / "fail" line per function, exit non-zero if
+            // anything is not Ok. The same `TestRunReport` we just
+            // built drives both renderers; only one is selected.
+            report.render_human(self.trace);
+            if !report.summary.all_ok() {
+                return Err(eyre!(
+                    "{} of {} test function(s) did not pass — re-run with --machine-output for structured details",
+                    report.summary.total - report.summary.ok,
+                    report.summary.total,
+                )
+                .into());
+            }
+        }
+        Ok(())
     }
 }
 
@@ -301,28 +357,3 @@ async fn dump_only_init(
     Ok(())
 }
 
-fn select_test_functions(meta: &movy_fuzz::meta::FuzzMetadata) -> Vec<FunctionIdent> {
-    let mut functions: Vec<_> = meta
-        .testing_abis
-        .iter()
-        .filter(|(package, _)| meta.target_packages.contains(package))
-        .flat_map(|(package, abi)| {
-            abi.modules.iter().flat_map(move |module| {
-                module.functions.iter().filter_map(move |function| {
-                    if function.name.starts_with("test_") {
-                        Some(FunctionIdent::new(
-                            package,
-                            &module.module_id.module_name,
-                            &function.name,
-                        ))
-                    } else {
-                        None
-                    }
-                })
-            })
-        })
-        .collect();
-    functions.sort();
-    functions.dedup();
-    functions
-}

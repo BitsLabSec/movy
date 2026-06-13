@@ -31,7 +31,7 @@ pub fn load_call_graph(package_root: &Path, test_mode: bool) -> Result<CallGraph
     let mut pending_calls = BTreeMap::<MoveFunctionKey, BTreeSet<PendingCall>>::new();
 
     for root in &search_roots {
-        let package = SuiCompiledPackage::build_checked(root, test_mode, false, true)?;
+        let package = SuiCompiledPackage::build_checked(root, test_mode, false, true, &movy_sui::compile::BuildIsolation::default())?;
         for module in package.all_modules_iter() {
             if is_sui_std_module(module.address().to_string().as_str()) {
                 continue;

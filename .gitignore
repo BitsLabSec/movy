@@ -9,4 +9,5 @@ flamegraph.svg
 target
 vault
 dataset
+*.zstd
 .z3-trace

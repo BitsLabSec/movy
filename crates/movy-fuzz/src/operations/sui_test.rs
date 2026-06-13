@@ -1,7 +1,5 @@
 use std::{
     collections::{BTreeMap, VecDeque},
-    fmt::Write,
-    path::PathBuf,
     sync::Arc,
 };
 
@@ -24,6 +22,7 @@ use movy_types::{
         SuiObjectInputArgument,
     },
     object::MoveOwner,
+    test_report::{Outcome, TestRunReport},
 };
 use sui_types::{
     digests::TransactionDigest,
@@ -86,20 +85,6 @@ impl<T> HasExtraState for SingleRunState<T> {
     fn extra_state_mut(&mut self) -> &mut Self::ExtraState {
         &mut self.extra
     }
-}
-
-fn format_execution_failure(
-    function: &FunctionIdent,
-    sequence: &MoveSequence,
-    trace: Option<&str>,
-    status: &dyn std::fmt::Debug,
-) -> String {
-    let mut out =
-        format!("test execution failed for {function}\nstatus: {status:?}\nsequence:\n{sequence}");
-    if let Some(trace) = trace.filter(|trace| !trace.trim().is_empty()) {
-        let _ = write!(out, "\ntrace:\n{trace}");
-    }
-    out
 }
 
 /// Determine the concrete object type a parameter expects, after substituting `ty_args`, along
@@ -232,14 +217,28 @@ fn decode_crash_reason(contents: &[u8]) -> Option<String> {
     )
 }
 
+/// Run every selected test function and collect a structured
+/// [`TestRunReport`]. Returns `Err` only on env-level / setup failures
+/// (PTB construction error from `to_ptb()`, executor init); per-function
+/// outcomes are captured in the report's `functions` list rather than
+/// short-circuiting.
+///
+/// Previously this function was fail-fast: the first non-ok execution
+/// status / oracle crash bubbled up as `Err` and the rest of the
+/// selected targets never ran. That semantic doesn't fit the audit
+/// pipeline, which runs `sui test` per synthesized harness and needs
+/// every test result attributable. The CLI layer
+/// ([`movy::sui::test::SuiTestArgs::run`]) preserves the historical
+/// human-output behavior (print "ok"/error lines, exit non-zero on
+/// any failure) when `--machine-output` is not used.
 pub fn test<T>(
     env: SuiTestingEnv<Arc<CachedStore<T>>>,
     meta: FuzzMetadata,
     trace: bool,
-    lcov: Option<(PathBuf, LineCoverageMap)>,
+    lcov: Option<LineCoverageMap>,
     object_mapping: BTreeMap<MoveTypeTag, Vec<MoveAddress>>,
     type_args: BTreeMap<FunctionIdent, BTreeMap<u16, MoveTypeTag>>,
-) -> Result<(), MovyError>
+) -> Result<TestRunReport, MovyError>
 where
     T: ObjectStore + BackingStore + BackingPackageStore + Clone + 'static,
 {
@@ -258,10 +257,11 @@ where
     let epoch_ms = state.fuzz_state().epoch_ms;
     let gas_id = state.fuzz_state().gas_id;
 
-    let coverage = lcov.map(|(path, map)| (path, map, LineCoverageCollector::new()));
+    let coverage = lcov.map(|map| (map, LineCoverageCollector::new()));
+
+    let mut report = TestRunReport::empty();
 
     for function in target_functions {
-        println!("running {function}");
         state.fuzz_env().inner().reset();
         state.fuzz_env().inner().restore_snapshot(baseline.clone());
 
@@ -303,11 +303,12 @@ where
             0,
         );
         if built.is_none() {
-            return Err(eyre!("unable to construct a test sequence for {function}").into());
+            report.record(function.to_string(), Outcome::SequenceBuildFailure);
+            continue;
         }
 
         let sequence = apply_hooks(&mut state, &sequence);
-        let tracer = if let Some((_, _, collector)) = &coverage {
+        let tracer = if let Some((_, collector)) = &coverage {
             SelectiveTracer::T1(TeeTracer(TreeTracer::new(), collector.tracer()))
         } else {
             SelectiveTracer::T2(TreeTracer::new())
@@ -324,18 +325,22 @@ where
             SelectiveTracer::T1(TeeTracer(tree, _)) => tree.take_inner().pprint_failure_views(),
             SelectiveTracer::T2(tree) => tree.take_inner().pprint_failure_views(),
         });
+        let trace_for_report = trace_output
+            .as_deref()
+            .filter(|t| !t.trim().is_empty())
+            .map(|t| t.to_string());
+        let sequence_display = sequence.to_string();
 
         if !results.results.effects.status().is_ok() {
-            return Err(eyre!(
-                "{}",
-                format_execution_failure(
-                    &function,
-                    &sequence,
-                    trace_output.as_deref(),
-                    results.results.effects.status(),
-                )
-            )
-            .into());
+            report.record(
+                function.to_string(),
+                Outcome::ExecutionFailure {
+                    status_debug: format!("{:?}", results.results.effects.status()),
+                    sequence: sequence_display,
+                    trace: trace_for_report,
+                },
+            );
+            continue;
         }
 
         // movy oracles (movy_pre_*/movy_post_*) report invariant violations by emitting a
@@ -345,28 +350,27 @@ where
             event.type_.module.as_str() == "oracle" && event.type_.name.as_str() == "Crash"
         });
         if let Some(crash_event) = crash_event {
-            let mut message = match decode_crash_reason(&crash_event.contents) {
-                Some(reason) => format!("oracle crash detected for {function}: {reason}"),
-                None => format!("oracle crash detected for {function}"),
-            };
-            if let Some(trace) = trace_output
-                .as_deref()
-                .filter(|trace| !trace.trim().is_empty())
-            {
-                let _ = write!(message, "\ntrace:\n{trace}");
-            }
-            return Err(eyre!("{}", message).into());
+            report.record(
+                function.to_string(),
+                Outcome::OracleCrash {
+                    reason: decode_crash_reason(&crash_event.contents),
+                    sequence: sequence_display,
+                    trace: trace_for_report,
+                },
+            );
+            continue;
         }
 
-        if trace && let Some(trace_output) = trace_output {
-            println!("trace for {function}:\n{trace_output}");
-        }
-        println!("ok {function}");
+        report.record(function.to_string(), Outcome::Ok);
     }
 
-    if let Some((path, map, collector)) = coverage {
-        map.write_lcov(collector.hits(), &path)?;
+    if let Some((map, collector)) = coverage {
+        report.lcov = Some(map.render_lcov(collector.hits()));
     }
+    // `trace` flag affects human-readable output only — the
+    // CLI layer drives the per-function trace print using the
+    // captured `trace` field on `Outcome::*Failure` / OracleCrash.
+    let _ = trace;
 
-    Ok(())
+    Ok(report)
 }

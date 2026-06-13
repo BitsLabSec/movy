@@ -2607,7 +2607,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "8d162beedaa69905488a8da94f5ac3edb4dd4788b732fadb7bd120b2625c1976"
 dependencies = [
  "data-encoding",
- "syn 1.0.109",
+ "syn 2.0.111",
 ]
 
 [[package]]
@@ -4913,12 +4913,12 @@ dependencies = [
 
 [[package]]
 name = "knowdit-kg-model"
-version = "0.3.1"
+version = "0.6.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "98719bbedfd8c3053d3ab646c170dd771d82c0a2bafe5e451c83012dc39ac3bd"
+checksum = "ae8f4cc21db7af046910ad0ecf8c0c2d13d81bb83d534c6d7dfc264706a7976e"
 dependencies = [
  "color-eyre",
- "schemars 0.9.0",
+ "schemars 1.1.0",
  "sea-orm",
  "serde",
  "tracing",
@@ -4927,9 +4927,9 @@ dependencies = [
 
 [[package]]
 name = "knowdit-repo-model"
-version = "0.3.1"
+version = "0.6.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "d1c106f9e70bbbcacd93193d6a4685a2a5da88506eaeaf88440ac00f4668f3e2"
+checksum = "09ec7635447205a04b4d0be514b0f1affa74f3b454f628f940fb87bf3773c2b0"
 dependencies = [
  "color-eyre",
  "glob",
@@ -9389,7 +9389,6 @@ checksum = "4cd191f9397d57d581cddd31014772520aa448f65ef991055d7f61582c65165f"
 dependencies = [
  "dyn-clone",
  "ref-cast",
- "schemars_derive 0.9.0",
  "serde",
  "serde_json",
 ]
@@ -9402,6 +9401,7 @@ checksum = "9558e172d4e8533736ba97870c4b2cd63f84b382a3d6eb063da41b91cce17289"
 dependencies = [
  "dyn-clone",
  "ref-cast",
+ "schemars_derive 1.1.0",
  "serde",
  "serde_json",
 ]
@@ -9420,9 +9420,9 @@ dependencies = [
 
 [[package]]
 name = "schemars_derive"
-version = "0.9.0"
+version = "1.1.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "5016d94c77c6d32f0b8e08b781f7dc8a90c2007d4e77472cc2807bc10a8438fe"
+checksum = "301858a4023d78debd2353c7426dc486001bddc91ae31a76fb1f55132f7e2633"
 dependencies = [
  "proc-macro2",
  "quote",
